@@ -7,10 +7,6 @@ module.exports = function(sequelize, DataTypes) {
       allowNull: false,
       primaryKey: true
     },
-    name: {
-      type: DataTypes.STRING(100),
-      allowNull: true
-    },
     unitid: {
       type: DataTypes.INTEGER,
       allowNull: true
@@ -38,6 +34,10 @@ module.exports = function(sequelize, DataTypes) {
     },
     updated_by: {
       type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    name: {
+      type: DataTypes.STRING(100),
       allowNull: true
     }
   }, {
