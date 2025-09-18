@@ -11,6 +11,10 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.STRING(20),
       allowNull: true
     },
+    name: {
+      type: DataTypes.STRING(100),
+      allowNull: true
+    },
     promoid: {
       type: DataTypes.INTEGER,
       allowNull: true
