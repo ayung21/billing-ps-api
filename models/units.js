@@ -11,7 +11,7 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.STRING(20),
       allowNull: true
     },
-    cabang: {
+    cabangid: {
       type: DataTypes.INTEGER,
       allowNull: true
     },
