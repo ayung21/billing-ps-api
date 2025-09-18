@@ -1,261 +1,397 @@
 const express = require('express');
-const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const { Op } = require('sequelize');
+const { sequelize } = require('../config/database');
+
+// Import model users
+const initModels = require('../models/init-models');
+const models = initModels(sequelize);
+const User = models.users;
+
 const router = express.Router();
 
-// Mock database - In production, replace with actual database connection
-let users = [
-  {
-    id: 1,
-    username: 'admin',
-    email: 'admin@billingps.com',
-    password: '$2b$10$8ZGHcJ2j1g7jxZHNQ4pZ4.sZZYuBJ1sKFjQ8s8cHLq.HdEFg5K6m6', // password: admin123
-    role: 'admin',
-    createdAt: new Date()
-  }
-];
-
-// JWT Secret (In production, use environment variable)
-const JWT_SECRET = process.env.JWT_SECRET || 'billingps-secret-key';
-
-// Middleware to verify JWT token
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({ message: 'Access token required' });
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ message: 'Invalid or expired token' });
+// Login
+router.post('/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    if (!username || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Username and password are required' 
+      });
     }
-    req.user = user;
-    next();
-  });
-};
 
-// Register new user
+    // Find user by username or email
+    const user = await User.findOne({
+      where: {
+        [Op.or]: [
+          { username },
+          { email: username }
+        ],
+        status: 1 // active user
+      }
+    });
+
+    if (!user) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid credentials or account is inactive' 
+      });
+    }
+
+    // Compare password
+    const isValidPassword = await bcrypt.compare(password, user.password);
+    if (!isValidPassword) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid credentials' 
+      });
+    }
+
+    const token = jwt.sign(
+      { 
+        userId: user.id, 
+        username: user.username,
+        email: user.email
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        token,
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          status: user.status
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
+  }
+});
+
+// Register
 router.post('/register', async (req, res) => {
   try {
-    const { username, email, password, role = 'user' } = req.body;
-
-    // Validation
+    const { username, email, password } = req.body;
+    
     if (!username || !email || !password) {
       return res.status(400).json({ 
+        success: false, 
         message: 'Username, email, and password are required' 
       });
     }
 
     // Check if user already exists
-    const existingUser = users.find(u => u.email === email || u.username === username);
+    const existingUser = await User.findOne({
+      where: {
+        [Op.or]: [
+          { username },
+          { email }
+        ]
+      }
+    });
+
     if (existingUser) {
-      return res.status(409).json({ 
-        message: 'User with this email or username already exists' 
+      return res.status(409).json({
+        success: false,
+        message: 'Username or email already exists'
       });
     }
 
     // Hash password
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create new user
-    const newUser = {
-      id: users.length + 1,
+    const newUser = await User.create({
       username,
       email,
       password: hashedPassword,
-      role,
-      createdAt: new Date()
-    };
-
-    users.push(newUser);
-
-    // Remove password from response
-    const userResponse = { ...newUser };
-    delete userResponse.password;
-
-    res.status(201).json({
-      message: 'User registered successfully',
-      user: userResponse
+      status: 1, // active
+      activ_period: new Date()
     });
 
+    res.status(201).json({
+      success: true,
+      message: 'User registered successfully',
+      data: {
+        id: newUser.id,
+        username: newUser.username,
+        email: newUser.email,
+        status: newUser.status
+      }
+    });
   } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    console.error('Register error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
   }
 });
 
-// Login user
-router.post('/login', async (req, res) => {
+// Get profile
+router.get('/profile', async (req, res) => {
   try {
-    const { email, password } = req.body;
-
-    // Validation
-    if (!email || !password) {
-      return res.status(400).json({ 
-        message: 'Email and password are required' 
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'No token provided' 
       });
     }
 
-    // Find user
-    const user = users.find(u => u.email === email);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findByPk(decoded.userId);
+    
     if (!user) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
     }
-
-    // Check password
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return res.status(401).json({ message: 'Invalid credentials' });
-    }
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { 
-        id: user.id, 
-        username: user.username, 
-        email: user.email, 
-        role: user.role 
-      },
-      JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
-    // Remove password from response
-    const userResponse = { ...user };
-    delete userResponse.password;
 
     res.json({
-      message: 'Login successful',
-      token,
-      user: userResponse
-    });
-
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-// Get current user profile
-router.get('/profile', authenticateToken, (req, res) => {
-  try {
-    const user = users.find(u => u.id === req.user.id);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    // Remove password from response
-    const userResponse = { ...user };
-    delete userResponse.password;
-
-    res.json({
-      message: 'Profile retrieved successfully',
-      user: userResponse
-    });
-
-  } catch (error) {
-    console.error('Profile error:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-// Update user profile
-router.put('/profile', authenticateToken, async (req, res) => {
-  try {
-    const { username, email } = req.body;
-    const userId = req.user.id;
-
-    // Find user
-    const userIndex = users.findIndex(u => u.id === userId);
-    if (userIndex === -1) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    // Check if new email/username is already taken by another user
-    if (email || username) {
-      const existingUser = users.find(u => 
-        u.id !== userId && (u.email === email || u.username === username)
-      );
-      if (existingUser) {
-        return res.status(409).json({ 
-          message: 'Email or username already taken by another user' 
-        });
+      success: true,
+      data: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        status: user.status,
+        activ_period: user.activ_period
       }
+    });
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid token' 
+      });
+    }
+    
+    console.error('Profile error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
+  }
+});
+
+// Update profile
+router.put('/profile', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'No token provided' 
+      });
     }
 
-    // Update user
-    if (username) users[userIndex].username = username;
-    if (email) users[userIndex].email = email;
-    users[userIndex].updatedAt = new Date();
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findByPk(decoded.userId);
+    
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
 
-    // Remove password from response
-    const userResponse = { ...users[userIndex] };
-    delete userResponse.password;
-
-    res.json({
-      message: 'Profile updated successfully',
-      user: userResponse
+    const { username, email } = req.body;
+    
+    await user.update({
+      username: username || user.username,
+      email: email || user.email
     });
 
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      data: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        status: user.status
+      }
+    });
   } catch (error) {
     console.error('Update profile error:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
   }
 });
 
 // Change password
-router.put('/change-password', authenticateToken, async (req, res) => {
+router.put('/change-password', async (req, res) => {
   try {
-    const { currentPassword, newPassword } = req.body;
-    const userId = req.user.id;
-
-    // Validation
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ 
-        message: 'Current password and new password are required' 
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'No token provided' 
       });
     }
 
-    // Find user
-    const userIndex = users.findIndex(u => u.id === userId);
-    if (userIndex === -1) {
-      return res.status(404).json({ message: 'User not found' });
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const { currentPassword, newPassword } = req.body;
+    
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password and new password are required'
+      });
+    }
+
+    const user = await User.findByPk(decoded.userId);
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
     }
 
     // Verify current password
-    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, users[userIndex].password);
-    if (!isCurrentPasswordValid) {
-      return res.status(401).json({ message: 'Current password is incorrect' });
+    const isValidPassword = await bcrypt.compare(currentPassword, user.password);
+    if (!isValidPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password is incorrect'
+      });
     }
 
     // Hash new password
-    const saltRounds = 10;
-    const hashedNewPassword = await bcrypt.hash(newPassword, saltRounds);
-
-    // Update password
-    users[userIndex].password = hashedNewPassword;
-    users[userIndex].updatedAt = new Date();
+    const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+    await user.update({ password: hashedNewPassword });
 
     res.json({
+      success: true,
       message: 'Password changed successfully'
     });
-
   } catch (error) {
     console.error('Change password error:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
   }
 });
 
-// Logout (client-side token removal, server-side could implement token blacklist)
-router.post('/logout', authenticateToken, (req, res) => {
-  res.json({
-    message: 'Logout successful. Please remove the token from client storage.'
-  });
+// Get all users (admin only)
+router.get('/users', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'No token provided' 
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    const { status, limit = 50, offset = 0 } = req.query;
+    
+    let whereClause = {};
+    if (status !== undefined) {
+      whereClause.status = parseInt(status);
+    }
+    
+    const users = await User.findAndCountAll({
+      where: whereClause,
+      attributes: ['id', 'username', 'email', 'status', 'activ_period'],
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      order: [['id', 'DESC']]
+    });
+
+    res.json({
+      success: true,
+      data: users.rows,
+      total: users.count,
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
+  }
 });
 
-// Export router as default and middleware as named export
+// Update user status
+router.put('/users/:id/status', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'No token provided' 
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const { id } = req.params;
+    const { status } = req.body;
+    
+    if (status === undefined || ![0, 1].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Status must be 0 (inactive) or 1 (active)'
+      });
+    }
+
+    const user = await User.findByPk(id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    await user.update({ 
+      status,
+      activ_period: status === 1 ? new Date() : user.activ_period
+    });
+
+    res.json({
+      success: true,
+      message: 'User status updated successfully',
+      data: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        status: user.status
+      }
+    });
+  } catch (error) {
+    console.error('Update user status error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
+  }
+});
+
 module.exports = router;
-module.exports.authenticateToken = authenticateToken;

@@ -1,0 +1,25 @@
+{
+  "host": "localhost",
+  "dialect": "mysql",
+  "port": 3306,
+  "database": "billingps",
+  "username": "root",
+  "password": "ayung",
+  "directory": "./models",
+  "additional": {
+    "timestamps": true,
+    "paranoid": false,
+    "freezeTableName": true,
+    "underscored": true
+  },
+  "tables": [],
+  "skipTables": [],
+  "caseModel": "p",
+  "caseFile": "l",
+  "caseProp": "c",
+  "lang": "es6",
+  "useDefine": false,
+  "singularize": true,
+  "spaces": 2,
+  "indentation": 2
+}
