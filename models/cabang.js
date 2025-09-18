@@ -7,8 +7,12 @@ module.exports = function(sequelize, DataTypes) {
       allowNull: false,
       primaryKey: true
     },
-    nama: {
+    name: {
       type: DataTypes.STRING(100),
+      allowNull: true
+    },
+    status: {
+      type: DataTypes.INTEGER,
       allowNull: true
     }
   }, {
