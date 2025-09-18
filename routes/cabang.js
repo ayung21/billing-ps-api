@@ -74,44 +74,6 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
-// Get cabang stats/overview (admin only)
-router.get('/stats/overview', verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    if (!Cabang) {
-      return res.status(500).json({
-        success: false,
-        message: 'Cabang model not available'
-      });
-    }
-
-    const totalCabang = await Cabang.count();
-    
-    const activeCabang = await Cabang.count({
-      where: { status: 1 }
-    });
-    
-    const inactiveCabang = await Cabang.count({
-      where: { status: 0 }
-    });
-
-    res.json({
-      success: true,
-      data: {
-        total: totalCabang,
-        active: activeCabang,
-        inactive: inactiveCabang
-      }
-    });
-  } catch (error) {
-    console.error('Get cabang stats error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
 // Get cabang by ID (protected)
 router.get('/:id', verifyToken, async (req, res) => {
   try {
@@ -238,10 +200,6 @@ router.put('/:id', verifyToken, verifyAdmin, async (req, res) => {
     
     await cabang.update({
       name: name || cabang.name,
-      address: address !== undefined ? address : cabang.address,
-      phone: phone !== undefined ? phone : cabang.phone,
-      status: status !== undefined ? parseInt(status) : cabang.status,
-      updated_by: req.user?.userId || cabang.updated_by
     });
 
     res.json({
@@ -260,7 +218,7 @@ router.put('/:id', verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // Delete cabang (admin only) - Set status to inactive (0)
-router.delete('/:id', verifyToken, verifyAdmin, async (req, res) => {
+router.delete('/:id', verifyToken, async (req, res) => {
   try {
     if (!Cabang) {
       return res.status(500).json({
@@ -298,108 +256,6 @@ router.delete('/:id', verifyToken, verifyAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Delete cabang error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-// Update cabang status (admin only)
-router.put('/:id/status', verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    if (!Cabang) {
-      return res.status(500).json({
-        success: false,
-        message: 'Cabang model not available'
-      });
-    }
-
-    const cabangId = parseInt(req.params.id);
-    const { status } = req.body;
-    
-    if (status === undefined || ![0, 1].includes(parseInt(status))) {
-      return res.status(400).json({
-        success: false,
-        message: 'Valid status is required (0: inactive, 1: active)'
-      });
-    }
-
-    const cabang = await Cabang.findByPk(cabangId);
-    
-    if (!cabang) {
-      return res.status(404).json({
-        success: false,
-        message: 'Cabang not found'
-      });
-    }
-
-    await cabang.update({ 
-      status: parseInt(status),
-      updated_by: req.user?.userId || null
-    });
-
-    res.json({
-      success: true,
-      message: 'Cabang status updated successfully',
-      data: cabang
-    });
-  } catch (error) {
-    console.error('Update cabang status error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-// Get cabang by status
-router.get('/status/:status', verifyToken, verifyUser, async (req, res) => {
-  try {
-    if (!Cabang) {
-      return res.status(500).json({
-        success: false,
-        message: 'Cabang model not available'
-      });
-    }
-
-    const { status } = req.params;
-    const { limit = 50, offset = 0 } = req.query;
-    
-    const statusValue = parseInt(status);
-    if (![0, 1].includes(statusValue)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid status parameter (0: inactive, 1: active)'
-      });
-    }
-
-    const cabang = await Cabang.findAndCountAll({
-      where: {
-        status: statusValue
-      },
-      limit: parseInt(limit),
-      offset: parseInt(offset),
-      order: [['name', 'ASC']]
-    });
-
-    const statusNames = {
-      0: 'inactive',
-      1: 'active'
-    };
-
-    res.json({
-      success: true,
-      data: cabang.rows,
-      total: cabang.count,
-      status: statusNames[statusValue],
-      limit: parseInt(limit),
-      offset: parseInt(offset)
-    });
-  } catch (error) {
-    console.error('Get cabang by status error:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Internal server error',
