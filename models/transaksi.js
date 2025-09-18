@@ -27,14 +27,14 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.INTEGER,
       allowNull: true
     },
-    created_date: {
-      type: DataTypes.DATE,
+    updated_by: {
+      type: DataTypes.INTEGER,
       allowNull: true
     }
   }, {
     sequelize,
     tableName: 'transaksi',
-    timestamps: false,
+    timestamps: true,
     indexes: [
       {
         name: "PRIMARY",
