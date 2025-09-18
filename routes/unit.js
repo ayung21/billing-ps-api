@@ -6,11 +6,13 @@ const { Op } = require('sequelize');
 const router = express.Router();
 
 // Import model units
-let Unit;
+let Unit, Cabang, HistoryUnits;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
   Unit = models.units;
+  Cabang = models.cabang;
+  HistoryUnits = models.history_units;
   
   if (!Unit) {
     console.error('❌ Units model not found in models');
@@ -70,51 +72,8 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
-// Get units stats/overview (admin only)
-router.get('/stats/overview', verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    if (!Unit) {
-      return res.status(500).json({
-        success: false,
-        message: 'Units model not available'
-      });
-    }
-
-    const totalUnits = await Unit.count();
-    
-    const activeUnits = await Unit.count({
-      where: { status: 1 }
-    });
-    
-    const inactiveUnits = await Unit.count({
-      where: { status: 0 }
-    });
-    
-    const maintenanceUnits = await Unit.count({
-      where: { status: 2 }
-    });
-
-    res.json({
-      success: true,
-      data: {
-        total: totalUnits,
-        active: activeUnits,
-        inactive: inactiveUnits,
-        maintenance: maintenanceUnits
-      }
-    });
-  } catch (error) {
-    console.error('Get stats error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
 // Get unit by ID (protected)
-router.get('/:id', verifyToken, verifyUser, async (req, res) => {
+router.get('/:id', verifyToken, async (req, res) => {
   try {
     if (!Unit) {
       return res.status(500).json({
@@ -147,8 +106,8 @@ router.get('/:id', verifyToken, verifyUser, async (req, res) => {
   }
 });
 
-// Create new unit (admin only)
-router.post('/', verifyToken, verifyAdmin, async (req, res) => {
+// Create new unit (admin only) - SINGLE UNIT
+router.post('/', verifyToken, async (req, res) => {
   try {
     if (!Unit) {
       return res.status(500).json({
@@ -166,9 +125,38 @@ router.post('/', verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
+    // Check if unit name already exists
+    const existingUnit = await Unit.findOne({
+      where: { name }
+    });
+
+    if (existingUnit) {
+      return res.status(409).json({
+        success: false,
+        message: 'Unit name already exists'
+      });
+    }
+
+    // Validate cabang exists if provided
+    if (cabang && Cabang) {
+      const cabangExists = await Cabang.findOne({
+        where: { 
+          id: parseInt(cabang),
+          status: 1 
+        }
+      });
+
+      if (!cabangExists) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid cabang ID or cabang is inactive'
+        });
+      }
+    }
+
     const newUnit = await Unit.create({
       name,
-      cabang: cabang || null,
+      cabangid: cabang ? parseInt(cabang) : null,
       status: status !== undefined ? parseInt(status) : 1,
       created_by: req.user?.userId || null,
       updated_by: req.user?.userId || null
@@ -190,7 +178,7 @@ router.post('/', verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // Update unit (admin only)
-router.put('/:id', verifyToken, verifyAdmin, async (req, res) => {
+router.put('/:id', verifyToken, async (req, res) => {
   try {
     if (!Unit) {
       return res.status(500).json({
@@ -218,6 +206,14 @@ router.put('/:id', verifyToken, verifyAdmin, async (req, res) => {
       updated_by: req.user?.userId || unit.updated_by
     });
 
+    await HistoryUnits.create({
+      unitid: unit.id,
+      name: unit.name,
+      cabangid: unit.cabangid,
+      status: unit.status,
+      created_by: req.user?.userId || null
+    });
+
     res.json({
       success: true,
       message: 'Unit updated successfully',
@@ -234,7 +230,7 @@ router.put('/:id', verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // Delete unit (admin only) - Set status to inactive (0)
-router.delete('/:id', verifyToken, verifyAdmin, async (req, res) => {
+router.delete('/:id', verifyToken, async (req, res) => {
   try {
     if (!Unit) {
       return res.status(500).json({
@@ -265,155 +261,6 @@ router.delete('/:id', verifyToken, verifyAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Delete unit error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-// Update unit status (admin only)
-router.put('/:id/status', verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    if (!Unit) {
-      return res.status(500).json({
-        success: false,
-        message: 'Units model not available'
-      });
-    }
-
-    const unitId = parseInt(req.params.id);
-    const { status } = req.body;
-    
-    if (status === undefined || ![0, 1, 2].includes(parseInt(status))) {
-      return res.status(400).json({
-        success: false,
-        message: 'Valid status is required (0: non-active, 1: active, 2: maintenance)'
-      });
-    }
-
-    const unit = await Unit.findByPk(unitId);
-    
-    if (!unit) {
-      return res.status(404).json({
-        success: false,
-        message: 'Unit not found'
-      });
-    }
-
-    await unit.update({ 
-      status: parseInt(status),
-      updated_by: req.user?.userId || null
-    });
-
-    res.json({
-      success: true,
-      message: 'Unit status updated successfully',
-      data: unit
-    });
-  } catch (error) {
-    console.error('Update unit status error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-// Get units by status
-router.get('/status/:status', verifyToken, verifyUser, async (req, res) => {
-  try {
-    if (!Unit) {
-      return res.status(500).json({
-        success: false,
-        message: 'Units model not available'
-      });
-    }
-
-    const { status } = req.params;
-    const { limit = 50, offset = 0 } = req.query;
-    
-    const statusValue = parseInt(status);
-    if (![0, 1, 2].includes(statusValue)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid status parameter (0: non-active, 1: active, 2: maintenance)'
-      });
-    }
-
-    const units = await Unit.findAndCountAll({
-      where: {
-        status: statusValue
-      },
-      limit: parseInt(limit),
-      offset: parseInt(offset),
-      order: [['name', 'ASC']]
-    });
-
-    const statusNames = {
-      0: 'non-active',
-      1: 'active', 
-      2: 'maintenance'
-    };
-
-    res.json({
-      success: true,
-      data: units.rows,
-      total: units.count,
-      status: statusNames[statusValue],
-      limit: parseInt(limit),
-      offset: parseInt(offset)
-    });
-  } catch (error) {
-    console.error('Get units by status error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-// Get units by cabang
-router.get('/cabang/:cabang', verifyToken, verifyUser, async (req, res) => {
-  try {
-    if (!Unit) {
-      return res.status(500).json({
-        success: false,
-        message: 'Units model not available'
-      });
-    }
-
-    const { cabang } = req.params;
-    const { status, limit = 50, offset = 0 } = req.query;
-    
-    let whereClause = {
-      cabang: parseInt(cabang)
-    };
-
-    if (status !== undefined) {
-      whereClause.status = parseInt(status);
-    }
-
-    const units = await Unit.findAndCountAll({
-      where: whereClause,
-      limit: parseInt(limit),
-      offset: parseInt(offset),
-      order: [['name', 'ASC']]
-    });
-
-    res.json({
-      success: true,
-      data: units.rows,
-      total: units.count,
-      cabang: parseInt(cabang),
-      limit: parseInt(limit),
-      offset: parseInt(offset)
-    });
-  } catch (error) {
-    console.error('Get units by cabang error:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Internal server error',
