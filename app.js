@@ -37,6 +37,7 @@ const unitRoutes = require('./routes/unit');
 const cabangRoutes = require('./routes/cabang');
 const transactionRoutes = require('./routes/transaction');
 const PromoRoutes = require('./routes/promo');
+const ProdukRoutes = require('./routes/produk');
 
 // Use routes
 app.use('/api/auth', authRoutes);
@@ -44,6 +45,7 @@ app.use('/api/unit', unitRoutes);
 app.use('/api/cabang', cabangRoutes);
 app.use('/api/transaction', transactionRoutes);
 app.use('/api/promo', PromoRoutes);
+app.use('/api/produk', ProdukRoutes);
 
 // Default route
 app.get('/', (req, res) => {
