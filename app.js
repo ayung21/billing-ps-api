@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const { testConnection } = require('./config/database');
+const { testConnection, sequelize } = require('./config/database');
 
 // Load environment variables
 dotenv.config();
@@ -9,8 +9,22 @@ dotenv.config();
 // Create Express application
 const app = express();
 
-// Test database connection on startup
-testConnection();
+// Initialize database and sync models
+const initializeDatabase = async () => {
+  const connected = await testConnection();
+  if (connected) {
+    try {
+      // Sync all models
+      await sequelize.sync({ alter: true });
+      console.log('✅ All models synchronized successfully.');
+    } catch (error) {
+      console.error('❌ Model synchronization failed:', error.message);
+    }
+  }
+};
+
+// Initialize database on startup
+initializeDatabase();
 
 // Middleware
 app.use(cors());
@@ -20,11 +34,13 @@ app.use(express.urlencoded({ extended: true }));
 // Import routes
 const authRoutes = require('./routes/auth');
 const unitRoutes = require('./routes/unit');
+const cabangRoutes = require('./routes/cabang');
 const transactionRoutes = require('./routes/transaction');
 
 // Use routes
 app.use('/api/auth', authRoutes);
 app.use('/api/unit', unitRoutes);
+app.use('/api/cabang', cabangRoutes);
 app.use('/api/transaction', transactionRoutes);
 
 // Default route
