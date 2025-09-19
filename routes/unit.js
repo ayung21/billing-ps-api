@@ -33,7 +33,7 @@ router.get('/', verifyToken, async (req, res) => {
       });
     }
 
-    const { status, cabang, limit = 50, offset = 0 } = req.query;
+    const { status, cabang, brandtvid, limit = 50, offset = 0 } = req.query;
     
     let whereClause = {};
     
@@ -45,7 +45,11 @@ router.get('/', verifyToken, async (req, res) => {
     }
     
     if (cabang !== undefined) {
-      whereClause.cabang = parseInt(cabang);
+      whereClause.cabangid = parseInt(cabang);
+    }
+
+    if (brandtvid !== undefined) {
+      whereClause.brandtvid = parseInt(brandtvid);
     }
     
     const units = await Unit.findAndCountAll({
@@ -116,7 +120,7 @@ router.post('/', verifyToken, async (req, res) => {
       });
     }
 
-    const { name, cabang, status } = req.body;
+    const { name, cabang, brandtvid, status } = req.body;
     
     if (!name) {
       return res.status(400).json({ 
@@ -157,6 +161,7 @@ router.post('/', verifyToken, async (req, res) => {
     const newUnit = await Unit.create({
       name,
       cabangid: cabang ? parseInt(cabang) : null,
+      brandtvid: brandtvid ? parseInt(brandtvid) : null,
       status: status !== undefined ? parseInt(status) : 1,
       created_by: req.user?.userId || null,
       updated_by: req.user?.userId || null
@@ -197,22 +202,60 @@ router.put('/:id', verifyToken, async (req, res) => {
       });
     }
 
-    const { name, cabang, status } = req.body;
+    const { name, cabang, brandtvid, status } = req.body;
+
+    // Check if new name already exists (exclude current unit)
+    if (name && name !== unit.name) {
+      const existingUnit = await Unit.findOne({
+        where: { 
+          name,
+          id: { [Op.ne]: unitId }
+        }
+      });
+
+      if (existingUnit) {
+        return res.status(409).json({
+          success: false,
+          message: 'Unit name already exists'
+        });
+      }
+    }
+
+    // Validate cabang exists if provided
+    if (cabang && Cabang) {
+      const cabangExists = await Cabang.findOne({
+        where: { 
+          id: parseInt(cabang),
+          status: 1 
+        }
+      });
+
+      if (!cabangExists) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid cabang ID or cabang is inactive'
+        });
+      }
+    }
     
     await unit.update({
       name: name || unit.name,
-      cabang: cabang !== undefined ? cabang : unit.cabang,
+      cabangid: cabang !== undefined ? (cabang ? parseInt(cabang) : null) : unit.cabangid,
+      brandtvid: brandtvid !== undefined ? (brandtvid ? parseInt(brandtvid) : null) : unit.brandtvid,
       status: status !== undefined ? parseInt(status) : unit.status,
       updated_by: req.user?.userId || unit.updated_by
     });
 
-    await HistoryUnits.create({
-      unitid: unit.id,
-      name: unit.name,
-      cabangid: unit.cabangid,
-      status: unit.status,
-      created_by: req.user?.userId || null
-    });
+    // Create history record
+    if (HistoryUnits) {
+      await HistoryUnits.create({
+        unitid: unit.id,
+        name: unit.name,
+        cabangid: unit.cabangid,
+        status: unit.status,
+        created_by: req.user?.userId || null
+      });
+    }
 
     res.json({
       success: true,
@@ -249,11 +292,29 @@ router.delete('/:id', verifyToken, async (req, res) => {
       });
     }
 
+    if (unit.status === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Unit is already inactive'
+      });
+    }
+
     // Set status to non-active (0)
     await unit.update({ 
       status: 0,
       updated_by: req.user?.userId || null
     });
+
+    // Create history record
+    if (HistoryUnits) {
+      await HistoryUnits.create({
+        unitid: unit.id,
+        name: unit.name,
+        cabangid: unit.cabangid,
+        status: unit.status,
+        created_by: req.user?.userId || null
+      });
+    }
 
     res.json({
       success: true,
