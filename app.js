@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { testConnection, sequelize } = require('./config/database');
+const { logError, logInfo, requestLogger } = require('./middleware/logger');
 
 // Load environment variables
 dotenv.config();
@@ -17,8 +18,10 @@ const initializeDatabase = async () => {
       // Sync all models
       await sequelize.sync({ alter: true });
       console.log('✅ All models synchronized successfully.');
+      logInfo('Database models synchronized successfully');
     } catch (error) {
       console.error('❌ Model synchronization failed:', error.message);
+      logError(error);
     }
   }
 };
@@ -31,25 +34,26 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Add request logging middleware
+app.use(requestLogger);
+
 // Import routes
 const authRoutes = require('./routes/auth');
 const unitRoutes = require('./routes/unit');
 const cabangRoutes = require('./routes/cabang');
-const transactionRoutes = require('./routes/transaction');
-const PromoRoutes = require('./routes/promo');
-const ProdukRoutes = require('./routes/produk');
-const MemberRoutes = require('./routes/member');
-const TransaksiRoutes = require('./routes/transaksi');
+const promoRoutes = require('./routes/promo');
+const produkRoutes = require('./routes/produk');
+const memberRoutes = require('./routes/member');
+const transaksiRoutes = require('./routes/transaksi');
 
 // Use routes
 app.use('/api/auth', authRoutes);
 app.use('/api/unit', unitRoutes);
 app.use('/api/cabang', cabangRoutes);
-app.use('/api/transaction', transactionRoutes);
-app.use('/api/promo', PromoRoutes);
-app.use('/api/produk', ProdukRoutes);
-app.use('/api/member', MemberRoutes);
-app.use('/api/transaksi', TransaksiRoutes);
+app.use('/api/promo', promoRoutes);
+app.use('/api/produk', produkRoutes);
+app.use('/api/member', memberRoutes);
+app.use('/api/transaksi', transaksiRoutes);
 
 // Default route
 app.get('/', (req, res) => {
@@ -63,6 +67,8 @@ app.get('/', (req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
+  logError(err, req);
+  
   res.status(500).json({
     message: 'Something went wrong!',
     error: process.env.NODE_ENV === 'development' ? err.message : 'Internal Server Error'
@@ -70,18 +76,32 @@ app.use((err, req, res, next) => {
 });
 
 // 404 handler
-// app.use('*', (req, res) => {
-//   res.status(404).json({
-//     message: 'Route not found',
-//     path: req.originalUrl
-//   });
-// });
+app.use('*', (req, res) => {
+  res.status(404).json({
+    message: 'Route not found',
+    path: req.originalUrl
+  });
+});
 
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`Access the API at http://localhost:${PORT}`);
+  logInfo(`Server started on port ${PORT}`, { port: PORT, env: process.env.NODE_ENV });
+});
+
+// Handle process termination gracefully
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  logInfo('Server shutting down gracefully');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  logInfo('Server shutting down gracefully');
+  process.exit(0);
 });
 
 module.exports = app;
