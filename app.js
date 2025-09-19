@@ -39,6 +39,7 @@ const transactionRoutes = require('./routes/transaction');
 const PromoRoutes = require('./routes/promo');
 const ProdukRoutes = require('./routes/produk');
 const MemberRoutes = require('./routes/member');
+const TransaksiRoutes = require('./routes/transaksi');
 
 // Use routes
 app.use('/api/auth', authRoutes);
@@ -48,6 +49,7 @@ app.use('/api/transaction', transactionRoutes);
 app.use('/api/promo', PromoRoutes);
 app.use('/api/produk', ProdukRoutes);
 app.use('/api/member', MemberRoutes);
+app.use('/api/transaksi', TransaksiRoutes);
 
 // Default route
 app.get('/', (req, res) => {
