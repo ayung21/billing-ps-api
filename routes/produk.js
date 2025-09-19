@@ -6,12 +6,13 @@ const { Op } = require('sequelize');
 const router = express.Router();
 
 // Import model produk
-let Produk, Cabang;
+let Produk, Cabang, HistoryUnit;
 try {
     const initModels = require('../models/init-models');
     const models = initModels(sequelize);
     Produk = models.produk;
     Cabang = models.cabang;
+    HistoryUnit = models.history_produk;
 
     if (!Produk) {
         console.error('❌ Produk model not found in models');
@@ -292,6 +293,16 @@ router.put('/:id', verifyToken, async (req, res) => {
             harga_jual: harga_jual !== undefined ? parseInt(harga_jual) : produk.harga_jual,
             status: status !== undefined ? parseInt(status) : produk.status,
             updated_by: req.user?.userId || produk.updated_by
+        });
+
+        await HistoryUnit.create({
+            produkid: produk.id,
+            type: type !== undefined ? parseInt(type) : produk.type,
+            name: name || produk.name,
+            stok: stok !== undefined ? parseInt(stok) : produk.stok,
+            harga_beli: harga_beli !== undefined ? parseInt(harga_beli) : produk.harga_beli,
+            harga_jual: harga_jual !== undefined ? parseInt(harga_jual) : produk.harga_jual,
+            created_by: req.user?.userId || null
         });
 
         res.json({
