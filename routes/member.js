@@ -1,5 +1,5 @@
 const express = require('express');
-const { verifyToken, verifyAdmin, verifyUser } = require('../middleware/auth');
+const { verifyToken } = require('../middleware/auth');
 const { sequelize } = require('../config/database');
 const { Op } = require('sequelize');
 
@@ -109,7 +109,7 @@ router.get('/:id', verifyToken, async (req, res) => {
 });
 
 // Create new member (admin only) - SINGLE MEMBER
-router.post('/', verifyToken, verifyAdmin, async (req, res) => {
+router.post('/', verifyToken, async (req, res) => {
   try {
     if (!Member) {
       return res.status(500).json({
@@ -127,11 +127,11 @@ router.post('/', verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // Validate phone number format (optional but recommended)
-    if (telpon && !/^[0-9+\-\s()]+$/.test(telpon)) {
+    // Validate phone number format (only numbers and common phone symbols, no letters)
+    if (telpon && !/^[0-9+\-\s().#*]+$/.test(telpon)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid phone number format'
+        message: 'Phone number can only contain numbers and symbols (+, -, space, parentheses, #, *)'
       });
     }
 
@@ -185,7 +185,7 @@ router.post('/', verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // Update member (admin only)
-router.put('/:id', verifyToken, verifyAdmin, async (req, res) => {
+router.put('/:id', verifyToken, async (req, res) => {
   try {
     if (!Member) {
       return res.status(500).json({
@@ -206,11 +206,11 @@ router.put('/:id', verifyToken, verifyAdmin, async (req, res) => {
 
     const { name, telpon, status } = req.body;
     
-    // Validate phone number format (if provided)
-    if (telpon && !/^[0-9+\-\s()]+$/.test(telpon)) {
+    // Validate phone number format (only numbers and common phone symbols, no letters)
+    if (telpon && !/^[0-9+\-\s().#*]+$/.test(telpon)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid phone number format'
+        message: 'Phone number can only contain numbers and symbols (+, -, space, parentheses, #, *)'
       });
     }
 
@@ -271,7 +271,7 @@ router.put('/:id', verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // Delete member (admin only) - Set status to inactive (0)
-router.delete('/:id', verifyToken, verifyAdmin, async (req, res) => {
+router.delete('/:id', verifyToken, async (req, res) => {
   try {
     if (!Member) {
       return res.status(500).json({
