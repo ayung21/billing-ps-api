@@ -246,11 +246,12 @@ router.put('/:id', verifyToken, async (req, res) => {
       updated_by: req.user?.userId || unit.updated_by
     });
 
-    // Create history record
+    // Create history record with brandtvid
     if (HistoryUnits) {
       await HistoryUnits.create({
         unitid: unit.id,
         name: unit.name,
+        brandtvid: unit.brandtvid,
         cabangid: unit.cabangid,
         status: unit.status,
         created_by: req.user?.userId || null
@@ -305,11 +306,12 @@ router.delete('/:id', verifyToken, async (req, res) => {
       updated_by: req.user?.userId || null
     });
 
-    // Create history record
+    // Create history record with brandtvid
     if (HistoryUnits) {
       await HistoryUnits.create({
         unitid: unit.id,
         name: unit.name,
+        brandtvid: unit.brandtvid,
         cabangid: unit.cabangid,
         status: unit.status,
         created_by: req.user?.userId || null
