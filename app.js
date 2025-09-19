@@ -38,6 +38,7 @@ const cabangRoutes = require('./routes/cabang');
 const transactionRoutes = require('./routes/transaction');
 const PromoRoutes = require('./routes/promo');
 const ProdukRoutes = require('./routes/produk');
+const MemberRoutes = require('./routes/member');
 
 // Use routes
 app.use('/api/auth', authRoutes);
@@ -46,6 +47,7 @@ app.use('/api/cabang', cabangRoutes);
 app.use('/api/transaction', transactionRoutes);
 app.use('/api/promo', PromoRoutes);
 app.use('/api/produk', ProdukRoutes);
+app.use('/api/member', MemberRoutes);
 
 // Default route
 app.get('/', (req, res) => {
