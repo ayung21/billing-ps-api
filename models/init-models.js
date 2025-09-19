@@ -2,6 +2,7 @@ var DataTypes = require("sequelize").DataTypes;
 var _access = require("./access");
 var _billingsave = require("./billingsave");
 var _cabang = require("./cabang");
+var _history_produk = require("./history_produk");
 var _history_units = require("./history_units");
 var _member = require("./member");
 var _produk = require("./produk");
@@ -16,6 +17,7 @@ function initModels(sequelize) {
   var access = _access(sequelize, DataTypes);
   var billingsave = _billingsave(sequelize, DataTypes);
   var cabang = _cabang(sequelize, DataTypes);
+  var history_produk = _history_produk(sequelize, DataTypes);
   var history_units = _history_units(sequelize, DataTypes);
   var member = _member(sequelize, DataTypes);
   var produk = _produk(sequelize, DataTypes);
@@ -31,6 +33,7 @@ function initModels(sequelize) {
     access,
     billingsave,
     cabang,
+    history_produk,
     history_units,
     member,
     produk,
