@@ -13,11 +13,19 @@ module.exports = function(sequelize, DataTypes) {
     },
     brandtvid: {
       type: DataTypes.INTEGER,
-      allowNull: true
+      allowNull: true,
+      references: {
+        model: 'brandtv',
+        key: 'id'
+      }
     },
     cabangid: {
       type: DataTypes.INTEGER,
-      allowNull: true
+      allowNull: true,
+      references: {
+        model: 'cabang',
+        key: 'id'
+      }
     },
     price: {
       type: DataTypes.INTEGER,
@@ -48,6 +56,20 @@ module.exports = function(sequelize, DataTypes) {
         using: "BTREE",
         fields: [
           { name: "id" },
+        ]
+      },
+      {
+        name: "brandtvid",
+        using: "BTREE",
+        fields: [
+          { name: "brandtvid" },
+        ]
+      },
+      {
+        name: "cabangid",
+        using: "BTREE",
+        fields: [
+          { name: "cabangid" },
         ]
       },
     ]
