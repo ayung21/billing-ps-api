@@ -32,12 +32,10 @@ function initModels(sequelize) {
   var units = _units(sequelize, DataTypes);
   var users = _users(sequelize, DataTypes);
 
-  // Define associations
-  units.belongsTo(brandtv, { foreignKey: 'brandtvid', as: 'brandtv' });
-  brandtv.hasMany(units, { foreignKey: 'brandtvid', as: 'units' });
-  
-  units.belongsTo(cabang, { foreignKey: 'cabangid', as: 'cabang' });
-  cabang.hasMany(units, { foreignKey: 'cabangid', as: 'units' });
+  units.belongsTo(brandtv, { as: "brandtv", foreignKey: "brandtvid"});
+  brandtv.hasMany(units, { as: "units", foreignKey: "brandtvid"});
+  units.belongsTo(cabang, { as: "cabang", foreignKey: "cabangid"});
+  cabang.hasMany(units, { as: "units", foreignKey: "cabangid"});
 
   return {
     access,
