@@ -15,7 +15,7 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.INTEGER,
       allowNull: false
     },
-    ip: {
+    ip_address: {
       type: DataTypes.STRING(15),
       allowNull: true
     }
