@@ -6,13 +6,14 @@ const { Op } = require('sequelize');
 const router = express.Router();
 
 // Import model units
-let Unit, Cabang, HistoryUnits;
+let Unit, Cabang, HistoryUnits, Brandtv;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
   Unit = models.units;
   Cabang = models.cabang;
   HistoryUnits = models.history_units;
+  Brandtv = models.brandtv;
   
   if (!Unit) {
     console.error('❌ Units model not found in models');
@@ -33,7 +34,7 @@ router.get('/', verifyToken, async (req, res) => {
       });
     }
 
-    const { status, cabang, brandtvid, limit = 50, offset = 0 } = req.query;
+    const { status, cabang, brandtvid, limit = 50, offset = 0, include_relations = false } = req.query;
     
     let whereClause = {};
     
@@ -51,9 +52,35 @@ router.get('/', verifyToken, async (req, res) => {
     if (brandtvid !== undefined) {
       whereClause.brandtvid = parseInt(brandtvid);
     }
+
+    // Setup include untuk join
+    const includeOptions = [];
+    
+    if (include_relations === 'true') {
+      // Join dengan Brandtv
+      if (Brandtv) {
+        includeOptions.push({
+          model: Brandtv,
+          as: 'brandtv',
+          attributes: ['id', 'name'],
+          required: false // LEFT JOIN
+        });
+      }
+      
+      // Join dengan Cabang
+      if (Cabang) {
+        includeOptions.push({
+          model: Cabang,
+          as: 'cabang',
+          attributes: ['id', 'name', 'status'],
+          required: false // LEFT JOIN
+        });
+      }
+    }
     
     const units = await Unit.findAndCountAll({
       where: whereClause,
+      include: includeOptions,
       limit: parseInt(limit),
       offset: parseInt(offset),
       order: [['id', 'ASC']]
