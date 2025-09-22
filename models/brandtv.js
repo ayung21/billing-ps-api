@@ -15,6 +15,10 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.INTEGER,
       allowNull: false
     },
+    cabangid: {
+      type: DataTypes.INTEGER,
+      allowNull: false
+    },
     ip_address: {
       type: DataTypes.STRING(15),
       allowNull: true
