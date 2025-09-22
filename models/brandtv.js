@@ -10,6 +10,14 @@ module.exports = function(sequelize, DataTypes) {
     name: {
       type: DataTypes.STRING(25),
       allowNull: true
+    },
+    codetvid: {
+      type: DataTypes.INTEGER,
+      allowNull: false
+    },
+    ip: {
+      type: DataTypes.STRING(15),
+      allowNull: true
     }
   }, {
     sequelize,
