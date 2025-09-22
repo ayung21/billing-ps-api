@@ -103,6 +103,107 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
+// Get available TV brands (TV yang belum digunakan oleh unit manapun)
+router.get('/available-tv', verifyToken, async (req, res) => {
+  try {
+    if (!Brandtv) {
+      return res.status(500).json({
+        success: false,
+        message: 'Brandtv model not available'
+      });
+    }
+
+    const { limit = 50, offset = 0 } = req.query;
+
+    // Validate and parse numeric parameters
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
+
+    try {
+      // Menggunakan raw query dengan kolom yang benar
+      const results = await sequelize.query(`
+        SELECT b.id, b.name, b.codetvid, b.ip,
+               COUNT(*) OVER() as total_count
+        FROM brandtv b 
+        LEFT JOIN units u ON u.brandtvid = b.id AND u.status != 0
+        WHERE u.id IS NULL
+        ORDER BY b.name ASC
+        LIMIT ? OFFSET ?
+      `, {
+        replacements: [parsedLimit, parsedOffset],
+        type: sequelize.QueryTypes.SELECT
+      });
+
+      // Validasi hasil query
+      if (!Array.isArray(results)) {
+        throw new Error('Query result is not an array');
+      }
+
+      const totalCount = results.length > 0 ? parseInt(results[0].total_count) : 0;
+
+      // Remove total_count from individual records
+      const cleanResults = results.map(row => {
+        const { total_count, ...cleanRow } = row;
+        return cleanRow;
+      });
+
+      res.json({
+        success: true,
+        message: 'Available TV brands retrieved successfully',
+        data: cleanResults,
+        total: totalCount,
+        limit: parsedLimit,
+        offset: parsedOffset
+      });
+    } catch (rawQueryError) {
+      console.error('Raw query failed:', rawQueryError);
+      console.error('Raw query error details:', {
+        message: rawQueryError.message,
+        sql: rawQueryError.sql,
+        parameters: rawQueryError.parameters
+      });
+      
+      // Fallback ke Sequelize query builder dengan kolom yang benar
+      try {
+        const availableTv = await Brandtv.findAndCountAll({
+          where: {
+            id: {
+              [Op.notIn]: sequelize.literal(`(
+                SELECT DISTINCT brandtvid 
+                FROM units 
+                WHERE brandtvid IS NOT NULL AND status != 0
+              )`)
+            }
+          },
+          attributes: ['id', 'name', 'codetvid', 'ip'], // Hanya kolom yang ada
+          limit: parsedLimit,
+          offset: parsedOffset,
+          order: [['name', 'ASC']]
+        });
+
+        res.json({
+          success: true,
+          message: 'Available TV brands retrieved successfully (fallback)',
+          data: availableTv.rows,
+          total: availableTv.count,
+          limit: parsedLimit,
+          offset: parsedOffset
+        });
+      } catch (fallbackError) {
+        console.error('Fallback query also failed:', fallbackError);
+        throw fallbackError;
+      }
+    }
+  } catch (error) {
+    console.error('Get available TV error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Get unit by ID (protected)
 router.get('/:id', verifyToken, async (req, res) => {
   try {
