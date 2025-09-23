@@ -533,7 +533,7 @@ router.post('/', verifyToken, async (req, res) => {
 
     // Check if unit name already exists
     const existingUnit = await Unit.findOne({
-      where: { name }
+      where: { name , status: 1, cabangid: cabang ? parseInt(cabang) : null }
     });
 
     if (existingUnit) {
@@ -615,7 +615,7 @@ router.put('/:id', verifyToken, async (req, res) => {
       });
     }
 
-    const { name, description, cabang, brandtvid, status } = req.body;
+    const { name, description, cabang, price, brandtvid, status } = req.body;
 
     // Check if new name already exists (exclude current unit)
     if (name && name !== unit.name) {
@@ -703,6 +703,7 @@ router.put('/:id', verifyToken, async (req, res) => {
       description: description !== undefined ? description : unit.description,
       cabangid: parsedCabangId,
       brandtvid: parsedBrandtvId,
+      price: price !== undefined ? parseFloat(price) : unit.price,
       status: parsedStatus,
       updated_by: req.user?.userId || unit.updated_by
     });
@@ -715,6 +716,7 @@ router.put('/:id', verifyToken, async (req, res) => {
         description: unit.description,
         brandtvid: unit.brandtvid,
         cabangid: unit.cabangid,
+        price: unit.price,
         status: unit.status,
         created_by: req.user?.userId || null
       });
@@ -785,6 +787,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
         description: unit.description,
         brandtvid: unit.brandtvid,
         cabangid: unit.cabangid,
+        price: unit.price,
         status: unit.status,
         created_by: req.user?.userId || null
       });
