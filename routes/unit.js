@@ -6,7 +6,7 @@ const { Op } = require('sequelize');
 const router = express.Router();
 
 // Import model units
-let Unit, Cabang, HistoryUnits, Brandtv;
+let Unit, Cabang, HistoryUnits, Brandtv, Access;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
@@ -14,6 +14,7 @@ try {
   Cabang = models.cabang;
   HistoryUnits = models.history_units;
   Brandtv = models.brandtv;
+  Access = models.access;
   
   if (!Unit) {
     console.error('❌ Units model not found in models');
@@ -35,23 +36,36 @@ router.get('/', verifyToken, async (req, res) => {
     }
 
     const { status, cabang, brandtvid, limit = 50, offset = 0, include_relations = false } = req.query;
+    const cabangaccess = [];
     
     let whereClause = {};
     
     // Filter berdasarkan status (1 = active sebagai default jika tidak dispesifikasi)
-    if (status !== undefined) {
-      whereClause.status = parseInt(status);
-    } else {
-      whereClause.status = { [Op.ne]: 0 }; // Tampilkan yang bukan non-active
-    }
+    // if (status !== undefined) {
+    //   whereClause.status = parseInt(status);
+    // } else {
+    //   whereClause.status = { [Op.ne]: 0 }; // Tampilkan yang bukan non-active
+    // }
     
-    if (cabang !== undefined) {
-      whereClause.cabangid = parseInt(cabang);
+    // if (cabang !== undefined) {
+    //   whereClause.cabangid = parseInt(cabang);
+    // }
+
+    // if (brandtvid !== undefined) {
+    //   whereClause.brandtvid = parseInt(brandtvid);
+    // }
+
+    const _access = await Access.findAll({
+        where: {
+            userId: req.user.userId
+        }
+    });
+    
+    for (const __access of _access) {
+        cabangaccess.push(__access.cabangid);
     }
 
-    if (brandtvid !== undefined) {
-      whereClause.brandtvid = parseInt(brandtvid);
-    }
+    whereClause.cabangid = { [Op.in]: cabangaccess };
 
     // Setup include untuk join
     const includeOptions = [];
