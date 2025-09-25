@@ -6,13 +6,14 @@ const { Op } = require('sequelize');
 const router = express.Router();
 
 // Import model produk
-let Produk, Cabang, HistoryUnit;
+let Produk, Cabang, HistoryUnit, Access;
 try {
     const initModels = require('../models/init-models');
     const models = initModels(sequelize);
     Produk = models.produk;
     Cabang = models.cabang;
     HistoryUnit = models.history_produk;
+    Access = models.access;
 
     if (!Produk) {
         console.error('❌ Produk model not found in models');
@@ -26,6 +27,7 @@ try {
 // Get all produk (protected)
 router.get('/', verifyToken, async (req, res) => {
     try {
+        const cabangaccess = [];
         if (!Produk) {
             return res.status(500).json({
                 success: false,
@@ -34,23 +36,36 @@ router.get('/', verifyToken, async (req, res) => {
         }
 
         const { status, type, cabang, limit = 50, offset = 0 } = req.query;
+        // console.log(req.query);
 
         let whereClause = {};
 
         // Filter berdasarkan status (1 = active sebagai default jika tidak dispesifikasi)
-        if (status !== undefined) {
-            whereClause.status = parseInt(status);
-        } else {
-            whereClause.status = { [Op.ne]: 2 }; // Tampilkan yang bukan non-active
+        // if (status !== undefined) {
+        //     whereClause.status = parseInt(status);
+        // } else {
+        //     whereClause.status = { [Op.ne]: 2 }; // Tampilkan yang bukan non-active
+        // }
+
+        // if (type !== undefined) {
+        //     whereClause.type = parseInt(type);
+        // }
+
+        // if (cabang !== undefined) {
+        //     whereClause.cabang = parseInt(cabang);
+        // }
+
+        const _access = await Access.findAll({
+            where: {
+                userId: req.user.userId
+            }
+        });
+        
+        for (const __access of _access) {
+            cabangaccess.push(__access.cabangid);
         }
 
-        if (type !== undefined) {
-            whereClause.type = parseInt(type);
-        }
-
-        if (cabang !== undefined) {
-            whereClause.cabang = parseInt(cabang);
-        }
+        whereClause.cabang = { [Op.in]: cabangaccess };
 
         const produk = await Produk.findAndCountAll({
             where: whereClause,
@@ -302,6 +317,7 @@ router.put('/:id', verifyToken, async (req, res) => {
             stok: stok !== undefined ? parseInt(stok) : produk.stok,
             harga_beli: harga_beli !== undefined ? parseInt(harga_beli) : produk.harga_beli,
             harga_jual: harga_jual !== undefined ? parseInt(harga_jual) : produk.harga_jual,
+            status: status !== undefined ? parseInt(status) : produk.status,
             created_by: req.user?.userId || null
         });
 
@@ -349,7 +365,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
 
         // Set status to non-active (2)
         await produk.update({
-            status: 2,
+            status: 0,
             updated_by: req.user?.userId || null
         });
 
