@@ -181,7 +181,7 @@ router.get('/:id', verifyToken, async (req, res) => {
 
     // Cek apakah user memiliki akses ke cabang ini
     const cabangAccess = await sequelize.query(`
-      SELECT c.id, c.name, c.status, c.created_at, c.updated_at
+      SELECT c.id, c.name, c.status
       FROM users u 
       JOIN access a ON a.userid = u.id 
       JOIN cabang c ON c.id = a.cabangid
