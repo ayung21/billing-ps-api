@@ -7,6 +7,10 @@ module.exports = function(sequelize, DataTypes) {
       allowNull: false,
       primaryKey: true
     },
+    promoid: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
     name: {
       type: DataTypes.STRING(100),
       allowNull: true
