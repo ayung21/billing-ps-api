@@ -5,6 +5,7 @@ var _brandtv = require("./brandtv");
 var _cabang = require("./cabang");
 var _codetv = require("./codetv");
 var _history_produk = require("./history_produk");
+var _history_promo = require("./history_promo");
 var _history_units = require("./history_units");
 var _member = require("./member");
 var _produk = require("./produk");
@@ -22,6 +23,7 @@ function initModels(sequelize) {
   var cabang = _cabang(sequelize, DataTypes);
   var codetv = _codetv(sequelize, DataTypes);
   var history_produk = _history_produk(sequelize, DataTypes);
+  var history_promo = _history_promo(sequelize, DataTypes);
   var history_units = _history_units(sequelize, DataTypes);
   var member = _member(sequelize, DataTypes);
   var produk = _produk(sequelize, DataTypes);
@@ -44,6 +46,7 @@ function initModels(sequelize) {
     cabang,
     codetv,
     history_produk,
+    history_promo,
     history_units,
     member,
     produk,
