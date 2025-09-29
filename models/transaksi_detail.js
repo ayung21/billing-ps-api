@@ -19,7 +19,7 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.INTEGER,
       allowNull: true
     },
-    produk: {
+    produkid: {
       type: DataTypes.INTEGER,
       allowNull: true
     },
