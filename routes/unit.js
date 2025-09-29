@@ -39,21 +39,6 @@ router.get('/', verifyToken, async (req, res) => {
     const cabangaccess = [];
     
     let whereClause = {};
-    
-    // Filter berdasarkan status (1 = active sebagai default jika tidak dispesifikasi)
-    // if (status !== undefined) {
-    //   whereClause.status = parseInt(status);
-    // } else {
-    //   whereClause.status = { [Op.ne]: 0 }; // Tampilkan yang bukan non-active
-    // }
-    
-    // if (cabang !== undefined) {
-    //   whereClause.cabangid = parseInt(cabang);
-    // }
-
-    // if (brandtvid !== undefined) {
-    //   whereClause.brandtvid = parseInt(brandtvid);
-    // }
 
     const _access = await Access.findAll({
         where: {
@@ -457,6 +442,86 @@ router.get('/available-tv/edit/:id/:ids', verifyToken, async (req, res) => {
     });
   }
 });
+
+// Get all units (protected) - UPDATE
+router.get('/allactive/:id', verifyToken, async (req, res) => {
+  try {
+    if (!Unit) {
+      return res.status(500).json({
+        success: false,
+        message: 'Units model not available'
+      });
+    }
+
+    const { status, cabang, brandtvid, limit = 50, offset = 0, include_relations = false } = req.query;
+    const _cabang = req.params.id;
+    
+    let whereClause = {};
+
+    // const _access = await Access.findAll({
+    //     where: {
+    //         userId: req.user.userId
+    //     }
+    // });
+    
+    // for (const __access of _access) {
+    //     cabangaccess.push(__access.cabangid);
+    // }
+
+    whereClause.cabangid = _cabang;
+    whereClause.status = 1;
+
+    // Setup include untuk join
+    const includeOptions = [];
+    
+    if (include_relations === 'true') {
+      // Join dengan Brandtv - UPDATE: gunakan ip_address
+      if (Brandtv) {
+        includeOptions.push({
+          model: Brandtv,
+          as: 'brandtv',
+          attributes: ['id', 'name', 'codetvid', 'ip_address'], // UPDATE: ip_address
+          required: false // LEFT JOIN
+        });
+      }
+      
+      // Join dengan Cabang
+      if (Cabang) {
+        includeOptions.push({
+          model: Cabang,
+          as: 'cabang',
+          attributes: ['id', 'name', 'status'],
+          required: false // LEFT JOIN
+        });
+      }
+    }
+    
+    const units = await Unit.findAndCountAll({
+      where: whereClause,
+      include: includeOptions,
+      attributes: ['id', 'name', 'description', 'brandtvid', 'cabangid', 'price', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      order: [['id', 'ASC']]
+    });
+
+    res.json({
+      success: true,
+      data: units.rows,
+      total: units.count,
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+  } catch (error) {
+    console.error('Get units error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Get unit by ID (protected)
 router.get('/:id', verifyToken, async (req, res) => {
   try {
