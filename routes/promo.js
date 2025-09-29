@@ -608,7 +608,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
       // Set status to non-active (0) - RAW QUERY
       await sequelize.query(`
         UPDATE promo 
-        SET status = 0, updated_by = ?, updated_at = NOW()
+        SET status = 0, updated_by = ?, updatedAt = NOW()
         WHERE id = ?
       `, {
         replacements: [req.user?.userId || null, promoId],
