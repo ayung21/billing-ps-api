@@ -6,6 +6,7 @@ const { sequelize } = require('../config/database');
 
 // Import model users
 const initModels = require('../models/init-models');
+const { verifyToken } = require('../middleware/auth');
 const models = initModels(sequelize);
 const User = models.users;
 
@@ -392,6 +393,10 @@ router.put('/users/:id/status', async (req, res) => {
       message: 'Internal server error' 
     });
   }
+});
+
+router.get('/checktoken', verifyToken, (req, res) => {
+  res.json({ success: true, message: 'Token is valid', user: req.user });
 });
 
 module.exports = router;
