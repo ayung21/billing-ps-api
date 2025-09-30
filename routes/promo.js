@@ -177,6 +177,145 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
+router.get('/allactive/:id', verifyToken, async (req, res) => {
+  try {
+    if (!sequelize) {
+      return res.status(500).json({
+        success: false,
+        message: 'Database connection not available'
+      });
+    }
+
+    const { status, unitid, cabangid, limit = 50, offset = 0 } = req.query;
+    const userId = req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'User ID not found in token'
+      });
+    }
+
+    try {
+      // Get user's cabang access
+      const _access = await sequelize.query(`
+        SELECT cabangid FROM access WHERE userid = ?
+      `, {
+        replacements: [userId],
+        type: sequelize.QueryTypes.SELECT
+      });
+      
+      const cabangaccess = _access.map(access => access.cabangid);
+
+      if (cabangaccess.length === 0) {
+        return res.json({
+          success: true,
+          data: [],
+          total: 0,
+          limit: parseInt(limit),
+          offset: parseInt(offset),
+          message: 'No cabang access found'
+        });
+      }
+
+      // Build where clause for filters
+      let whereClause = [];
+      const replacements = [];
+
+      // Status filter
+      // if (status !== undefined) {
+        whereClause.push('p.status = ?');
+        replacements.push(1);
+      // } else {
+      //   whereClause.push('p.status != ?');
+      //   replacements.push(0); // Show non-inactive
+      // }
+
+      // Unit filter
+      // if (unitid !== undefined) {
+      //   whereClause.push('p.unitid = ?');
+      //   replacements.push(parseInt(unitid));
+      // }
+
+      // Cabang filter
+      // if (cabangid !== undefined) {
+        whereClause.push('p.cabangid = ?');
+        replacements.push(parseInt(req.params.id));
+      // }
+
+      // User cabang access filter
+      // whereClause.push(`p.cabangid IN (${cabangaccess.map(() => '?').join(',')})`);
+      // replacements.push(...cabangaccess);
+
+      // Build final query with discount calculation - CAST to DECIMAL for precise calculation
+      let query = `
+        SELECT p.id, p.name as promoname, p.discount_nominal, p.discount_percent, 
+               p.hours, p.status, p.createdAt, p.updatedAt, p.created_by, p.updated_by,
+               u.id as unitid, u.name as unitname, u.price as unitprice,
+               CAST(u.price * p.hours AS DECIMAL(15,2)) as before_discount,
+               CAST((u.price * p.hours) - CASE 
+                 WHEN p.discount_nominal IS NULL THEN (u.price * p.hours * (p.discount_percent / 100)) 
+                 ELSE p.discount_nominal 
+               END AS DECIMAL(15,2)) as after_discount,
+               u.description as unitdescription, c.id as cabangid, c.name as cabangname,
+               COUNT(*) OVER() as total_count
+        FROM promo p 
+        JOIN units u ON u.id = p.unitid 
+        JOIN cabang c ON c.id = p.cabangid
+      `;
+
+      if (whereClause.length > 0) {
+        query += ` WHERE ${whereClause.join(' AND ')}`;
+      }
+
+      query += ` ORDER BY p.id ASC LIMIT ? OFFSET ?`;
+      replacements.push(parseInt(limit), parseInt(offset));
+
+      const results = await sequelize.query(query, {
+        replacements,
+        type: sequelize.QueryTypes.SELECT
+      });
+
+      const totalCount = results.length > 0 ? parseInt(results[0].total_count) : 0;
+
+      // Remove total_count from individual records
+      const cleanResults = results.map(row => {
+        const { total_count, ...cleanRow } = row;
+        return {
+          ...cleanRow,
+          // Convert to proper numeric types
+          before_discount: parseFloat(cleanRow.before_discount || 0),
+          after_discount: parseFloat(cleanRow.after_discount || 0),
+          unitprice: parseFloat(cleanRow.unitprice || 0)
+        };
+      });
+
+      res.json({
+        success: true,
+        data: cleanResults,
+        total: totalCount,
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        user_cabang_access: cabangaccess
+      });
+    } catch (queryError) {
+      console.error('Query error:', queryError);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Database query failed',
+        error: process.env.NODE_ENV === 'development' ? queryError.message : undefined
+      });
+    }
+  } catch (error) {
+    console.error('Get promos error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Get promo by ID (protected) - WITH JOINS - RAW QUERY ONLY
 router.get('/:id', verifyToken, async (req, res) => {
   try {
