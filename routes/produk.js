@@ -91,6 +91,74 @@ router.get('/', verifyToken, async (req, res) => {
     }
 });
 
+// Get all produk (protected)
+router.get('/allactive/:id', verifyToken, async (req, res) => {
+    try {
+        const cabangaccess = [];
+        if (!Produk) {
+            return res.status(500).json({
+                success: false,
+                message: 'Produk model not available'
+            });
+        }
+
+        const { status, type, cabang, limit = 50, offset = 0 } = req.query;
+        // console.log(req.query);
+
+        let whereClause = {};
+
+        // Filter berdasarkan status (1 = active sebagai default jika tidak dispesifikasi)
+        // if (status !== undefined) {
+        //     whereClause.status = parseInt(status);
+        // } else {
+        //     whereClause.status = { [Op.ne]: 2 }; // Tampilkan yang bukan non-active
+        // }
+
+        // if (type !== undefined) {
+        //     whereClause.type = parseInt(type);
+        // }
+
+        // if (cabang !== undefined) {
+        whereClause.status = 1;
+        whereClause.cabang = req.params.id;
+        // }
+
+        const _access = await Access.findAll({
+            where: {
+                userId: req.user.userId
+            }
+        });
+        
+        // for (const __access of _access) {
+        //     cabangaccess.push(__access.cabangid);
+        // }
+
+        // whereClause.cabang = { [Op.in]: cabangaccess };
+
+        const produk = await Produk.findAndCountAll({
+            where: whereClause,
+            limit: parseInt(limit),
+            offset: parseInt(offset),
+            order: [['id', 'ASC']]
+        });
+
+        res.json({
+            success: true,
+            data: produk.rows,
+            total: produk.count,
+            limit: parseInt(limit),
+            offset: parseInt(offset)
+        });
+    } catch (error) {
+        console.error('Get produk error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+});
+
 // Get produk by ID (protected)
 router.get('/:id', verifyToken, async (req, res) => {
     try {
