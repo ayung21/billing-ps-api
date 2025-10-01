@@ -18,6 +18,10 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.STRING(100),
       allowNull: true
     },
+    cabangid: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
     grandtotal: {
       type: DataTypes.STRING(100),
       allowNull: true
