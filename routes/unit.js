@@ -499,7 +499,7 @@ router.get('/allactive/:id', verifyToken, async (req, res) => {
     const units = await Unit.findAndCountAll({
       where: whereClause,
       include: includeOptions,
-      attributes: ['id', 'name', 'description', 'brandtvid', 'cabangid', 'price', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
+      attributes: ['id', 'token', 'name', 'description', 'brandtvid', 'cabangid', 'price', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
       limit: parseInt(limit),
       offset: parseInt(offset),
       order: [['id', 'ASC']]
