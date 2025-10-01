@@ -29,13 +29,13 @@ try {
 // Generate transaction code with sequential number
 const generateTransactionCode = async () => {
   const now = new Date();
-  const year = now.getFullYear().toString().slice(-2); // 2 digit tahun terakhir
+  const year = now.getFullYear().toString(); // 4 digit tahun
   const month = (now.getMonth() + 1).toString().padStart(2, '0'); // 2 digit bulan
   const day = now.getDate().toString().padStart(2, '0'); // 2 digit hari
   
   // Get today's date range for filtering
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  const endOfDay = new Date(now.getFullYear(), now.getMonth(), 31, 23, 59, 59);
   
   try {
     // Count today's transactions to get next sequential number
@@ -46,13 +46,13 @@ const generateTransactionCode = async () => {
         }
       }
     });
-    
-    // Next sequential number (starting from 001)
-    const sequentialNumber = (todayTransactionCount + 1).toString().padStart(3, '0');
-    
-    // Format: TRX + YYMMDD + SSS (SSS = Sequential number)
-    // Contoh: TRX251219001, TRX251219002, TRX251219003
-    return `TRX${year}${month}${day}${sequentialNumber}`;
+
+    // Next sequential number (starting from 0001)
+    const sequentialNumber = (todayTransactionCount + 1).toString().padStart(4, '0');
+
+    // Format: TRX + YYMMDD + SSSS (SSSS = Sequential number)
+    // Contoh: TRX2512190001, TRX2512190002, TRX2512190003
+    return `TRX${year}${month}${sequentialNumber}`;
   } catch (error) {
     console.error('Error generating transaction code:', error);
     // Fallback to timestamp-based code if database query fails
@@ -209,8 +209,9 @@ router.get('/:code', verifyToken, async (req, res) => {
 });
 
 // Create new transaction with details (admin only)
-router.post('/', verifyToken, verifyAdmin, async (req, res) => {
+router.post('/', verifyToken, async (req, res) => {
   const dbTransaction = await sequelize.transaction();
+  let transactionFinished = false;
   
   try {
     if (!Transaksi || !TransaksiDetail) {
@@ -222,15 +223,26 @@ router.post('/', verifyToken, verifyAdmin, async (req, res) => {
 
     const { 
       memberid, 
-      customer, 
-      telepon, 
-      grandtotal, 
+      customer_name, 
+      customer_phone, 
+      total_price, 
+      rental_price,
       status = '1',
-      details 
+      products,
+      unit_token,
+      promo_token,
+      duration
     } = req.body;
     
     // Validation
-    if (!customer && !memberid) {
+    // console.log(req.body);
+    // res.json({
+    //   success: true,
+    //   message: 'Transaction created successfully',
+    //   data: req.body
+    // });
+    // return;
+    if (!customer_name) {
       await dbTransaction.rollback();
       return res.status(400).json({ 
         success: false, 
@@ -238,13 +250,13 @@ router.post('/', verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    if (!details || !Array.isArray(details) || details.length === 0) {
-      await dbTransaction.rollback();
-      return res.status(400).json({
-        success: false,
-        message: 'Transaction details are required'
-      });
-    }
+    // if (!details || !Array.isArray(details) || details.length === 0) {
+    //   await dbTransaction.rollback();
+    //   return res.status(400).json({
+    //     success: false,
+    //     message: 'Transaction details are required'
+    //   });
+    // }
 
     // Validate member if provided
     if (memberid && Member) {
@@ -280,6 +292,13 @@ router.post('/', verifyToken, verifyAdmin, async (req, res) => {
       }
     }
 
+    // res.json({
+    //   success: true,
+    //   message: 'Transaction created successfully',
+    //   data: transactionCode
+    // });
+    // return;
+
     if (codeExists) {
       await dbTransaction.rollback();
       return res.status(500).json({
@@ -292,10 +311,10 @@ router.post('/', verifyToken, verifyAdmin, async (req, res) => {
     const newTransaction = await Transaksi.create({
       code: transactionCode,
       memberid: memberid ? parseInt(memberid) : null,
-      customer: customer || null,
-      telepon: telepon || null,
-      grandtotal: grandtotal ? grandtotal.toString() : '0',
-      status: status.toString(),
+      customer: customer_name || null,
+      telepon: customer_phone || null,
+      grandtotal: total_price ? total_price.toString() : '0',
+      status: 1,
       created_by: req.user?.userId || null,
       updated_by: req.user?.userId || null
     }, { transaction: dbTransaction });
@@ -304,90 +323,102 @@ router.post('/', verifyToken, verifyAdmin, async (req, res) => {
     const createdDetails = [];
     let calculatedTotal = 0;
 
-    for (let i = 0; i < details.length; i++) {
-      const detail = details[i];
-      
+    for (let i = 0; i < products.length; i++) {
+      const product = products[i];
+
       // Validate required fields
-      if (!detail.name) {
+      if (!product.name) {
         await dbTransaction.rollback();
         return res.status(400).json({
           success: false,
-          message: `Detail at index ${i} is missing required field: name`
+          message: `Product at index ${i} is missing required field: name`
         });
       }
 
       // Validate unit if provided
-      if (detail.unitid && Unit) {
+      if (product.unitid && Unit) {
         const unit = await Unit.findOne({
-          where: { id: parseInt(detail.unitid), status: { [Op.ne]: 0 } }
+          where: { id: parseInt(product.unitid), status: { [Op.ne]: 0 } }
         });
 
         if (!unit) {
           await dbTransaction.rollback();
           return res.status(400).json({
             success: false,
-            message: `Invalid unit ID ${detail.unitid} at detail index ${i}`
+            message: `Invalid unit ID ${product.unitid} at product index ${i}`
           });
         }
       }
 
       // Validate promo if provided
-      if (detail.promoid && Promo) {
+      if (product.promoid && Promo) {
         const promo = await Promo.findOne({
-          where: { id: parseInt(detail.promoid), status: 1 }
+          where: { id: parseInt(product.promoid), status: 1 }
         });
 
         if (!promo) {
           await dbTransaction.rollback();
           return res.status(400).json({
             success: false,
-            message: `Invalid promo ID ${detail.promoid} at detail index ${i}`
+            message: `Invalid promo ID ${product.promoid} at product index ${i}`
           });
         }
       }
 
       // Validate produk if provided
-      if (detail.produk && Produk) {
+      if (product.produk && Produk) {
         const produk = await Produk.findOne({
-          where: { id: parseInt(detail.produk), status: 1 }
+          where: { id: parseInt(product.produk), status: 1 }
         });
 
         if (!produk) {
           await dbTransaction.rollback();
           return res.status(400).json({
             success: false,
-            message: `Invalid produk ID ${detail.produk} at detail index ${i}`
+            message: `Invalid produk ID ${product.produk} at product index ${i}`
           });
         }
       }
 
-      const detailData = {
+      const productData = {
         code: transactionCode,
-        name: detail.name,
-        promoid: detail.promoid ? parseInt(detail.promoid) : null,
-        produk: detail.produk ? parseInt(detail.produk) : null,
-        unitid: detail.unitid ? parseInt(detail.unitid) : null,
-        hours: detail.hours ? parseInt(detail.hours) : null,
-        harga: detail.harga ? parseInt(detail.harga) : 0,
-        status: detail.status !== undefined ? parseInt(detail.status) : 1,
+        name: product.name,
+        produk_token: product.product_token ?? null,
+        qty: product.quantity ? parseInt(product.quantity) : null,
+        harga: product.price ? parseInt(product.price) : 0,
+        status: 1,
         created_by: req.user?.userId || null,
         updated_by: req.user?.userId || null
       };
 
-      const createdDetail = await TransaksiDetail.create(detailData, { transaction: dbTransaction });
-      createdDetails.push(createdDetail);
-      
-      calculatedTotal += detailData.harga;
+      const createdDetail = await TransaksiDetail.create(productData, { transaction: dbTransaction });
+      // createdDetails.push(createdDetail);
+
+      // calculatedTotal += productData.harga;
     }
 
-    // Update grandtotal if not provided
-    if (!grandtotal) {
-      await newTransaction.update({
-        grandtotal: calculatedTotal.toString()
-      }, { transaction: dbTransaction });
-    }
+    const productData = {
+      code: transactionCode,
+      name: '',
+      promo_token: promo_token ?? null,
+      unit_token: unit_token ?? null,
+      hours: duration ? parseInt(duration) : null,
+      harga: rental_price ? parseInt(rental_price) : 0,
+      status: 1,
+      created_by: req.user?.userId || null,
+      updated_by: req.user?.userId || null
+    };
+
+    const createdDetail = await TransaksiDetail.create(productData, { transaction: dbTransaction });
+    // Update total_price if not provided
+    // if (!total_price) {
+    //   await newTransaction.update({
+    //     grandtotal: calculatedTotal.toString()
+    //   }, { transaction: dbTransaction });
+    // }
 
     await dbTransaction.commit();
+    transactionFinished = true;
 
     // Fetch complete transaction with details
     const completeTransaction = await Transaksi.findOne({
@@ -405,7 +436,13 @@ router.post('/', verifyToken, verifyAdmin, async (req, res) => {
     });
 
   } catch (error) {
-    await dbTransaction.rollback();
+    if (dbTransaction && !transactionFinished) {
+      try {
+        await dbTransaction.rollback();
+      } catch (rollbackError) {
+        console.error('Rollback error:', rollbackError);
+      }
+    }
     console.error('Create transaction error:', error);
     res.status(500).json({ 
       success: false, 
