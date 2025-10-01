@@ -72,16 +72,20 @@ router.get('/', verifyToken, async (req, res) => {
     }
 
     const { status, memberid, limit = 50, offset = 0, include_details = false } = req.query;
-    
+    let cabangaccess = [];
     let whereClause = {};
     
-    if (status !== undefined) {
-      whereClause.status = status;
-    }
+    const _access = await Access.findAll({
+        where: {
+            userId: req.user.userId
+        }
+    });
     
-    if (memberid !== undefined) {
-      whereClause.memberid = parseInt(memberid);
+    for (const __access of _access) {
+        cabangaccess.push(__access.cabangid);
     }
+
+    whereClause.cabangid = { [Op.in]: cabangaccess };
 
     const includeOptions = [];
     if (include_details === 'true') {
@@ -222,7 +226,8 @@ router.post('/', verifyToken, async (req, res) => {
     }
 
     const { 
-      memberid, 
+      memberid,
+      cabang_id,
       customer_name, 
       customer_phone, 
       total_price, 
@@ -313,6 +318,7 @@ router.post('/', verifyToken, async (req, res) => {
       memberid: memberid ? parseInt(memberid) : null,
       customer: customer_name || null,
       telepon: customer_phone || null,
+      cabangid: cabang_id ? parseInt(cabang_id) : null,
       grandtotal: total_price ? total_price.toString() : '0',
       status: 1,
       created_by: req.user?.userId || null,
