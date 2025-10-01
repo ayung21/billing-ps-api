@@ -637,6 +637,26 @@ router.put('/:id', verifyToken, async (req, res) => {
         }
       }
 
+      // INSERT history_promo setelah update
+      await sequelize.query(`
+        INSERT INTO history_promo 
+        (token, promoid, name, unitid, cabangid, discount_percent, discount_nominal, hours, created_by, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      `, {
+        replacements: [
+          promo.token,
+          promoId,
+          name || promo.name,
+          unitid !== undefined ? (unitid ? parseInt(unitid) : null) : promo.unitid,
+          cabangid !== undefined ? (cabangid ? parseInt(cabangid) : null) : promo.cabangid,
+          discount_percent !== undefined ? (discount_percent ? parseInt(discount_percent) : null) : promo.discount_percent,
+          discount_nominal !== undefined ? (discount_nominal ? parseInt(discount_nominal) : null) : promo.discount_nominal,
+          hours !== undefined ? (hours ? parseInt(hours) : null) : promo.hours,
+          req.user?.userId || null
+        ],
+        type: sequelize.QueryTypes.INSERT
+      });
+
       // Update promo - RAW QUERY
       await sequelize.query(`
         UPDATE promo 
@@ -663,26 +683,6 @@ router.put('/:id', verifyToken, async (req, res) => {
           promoId
         ],
         type: sequelize.QueryTypes.UPDATE
-      });
-
-      // INSERT history_promo setelah update
-      await sequelize.query(`
-        INSERT INTO history_promo 
-        (token, promoid, name, unitid, cabangid, discount_percent, discount_nominal, hours, created_by, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
-      `, {
-        replacements: [
-          promo.token,
-          promoId,
-          name || promo.name,
-          unitid !== undefined ? (unitid ? parseInt(unitid) : null) : promo.unitid,
-          cabangid !== undefined ? (cabangid ? parseInt(cabangid) : null) : promo.cabangid,
-          discount_percent !== undefined ? (discount_percent ? parseInt(discount_percent) : null) : promo.discount_percent,
-          discount_nominal !== undefined ? (discount_nominal ? parseInt(discount_nominal) : null) : promo.discount_nominal,
-          hours !== undefined ? (hours ? parseInt(hours) : null) : promo.hours,
-          req.user?.userId || null
-        ],
-        type: sequelize.QueryTypes.INSERT
       });
 
       // Get updated promo with JOIN

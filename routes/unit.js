@@ -777,17 +777,6 @@ router.put('/:id', verifyToken, async (req, res) => {
         });
       }
     }
-    
-    await unit.update({
-      token: Math.random().toString(36).substring(2, 15), // Generate random token
-      name: name || unit.name,
-      description: description !== undefined ? description : unit.description,
-      cabangid: parsedCabangId,
-      brandtvid: parsedBrandtvId,
-      price: price !== undefined ? parseFloat(price) : unit.price,
-      status: parsedStatus,
-      updated_by: req.user?.userId || unit.updated_by
-    });
 
     // Create history record with description
     if (HistoryUnits) {
@@ -803,6 +792,17 @@ router.put('/:id', verifyToken, async (req, res) => {
         created_by: req.user?.userId || null
       });
     }
+    
+    await unit.update({
+      token: Math.random().toString(36).substring(2, 15), // Generate random token
+      name: name || unit.name,
+      description: description !== undefined ? description : unit.description,
+      cabangid: parsedCabangId,
+      brandtvid: parsedBrandtvId,
+      price: price !== undefined ? parseFloat(price) : unit.price,
+      status: parsedStatus,
+      updated_by: req.user?.userId || unit.updated_by
+    });
 
     res.json({
       success: true,

@@ -367,19 +367,7 @@ router.put('/:id', verifyToken, async (req, res) => {
                 });
             }
         }
-
-        await produk.update({
-            token: Math.random().toString(36).substring(2, 15), // Generate random token
-            type: type !== undefined ? parseInt(type) : produk.type,
-            name: name || produk.name,
-            stok: stok !== undefined ? parseInt(stok) : produk.stok,
-            cabang: cabang !== undefined ? (cabang ? parseInt(cabang) : null) : produk.cabang,
-            harga_beli: harga_beli !== undefined ? parseInt(harga_beli) : produk.harga_beli,
-            harga_jual: harga_jual !== undefined ? parseInt(harga_jual) : produk.harga_jual,
-            status: status !== undefined ? parseInt(status) : produk.status,
-            updated_by: req.user?.userId || produk.updated_by
-        });
-
+        
         await HistoryUnit.create({
             token: produk.token,
             produkid: produk.id,
@@ -390,6 +378,18 @@ router.put('/:id', verifyToken, async (req, res) => {
             harga_jual: harga_jual !== undefined ? parseInt(harga_jual) : produk.harga_jual,
             status: status !== undefined ? parseInt(status) : produk.status,
             created_by: req.user?.userId || null
+        });
+        
+        await produk.update({
+            token: Math.random().toString(36).substring(2, 15), // Generate random token
+            type: type !== undefined ? parseInt(type) : produk.type,
+            name: name || produk.name,
+            stok: stok !== undefined ? parseInt(stok) : produk.stok,
+            cabang: cabang !== undefined ? (cabang ? parseInt(cabang) : null) : produk.cabang,
+            harga_beli: harga_beli !== undefined ? parseInt(harga_beli) : produk.harga_beli,
+            harga_jual: harga_jual !== undefined ? parseInt(harga_jual) : produk.harga_jual,
+            status: status !== undefined ? parseInt(status) : produk.status,
+            updated_by: req.user?.userId || produk.updated_by
         });
 
         res.json({
