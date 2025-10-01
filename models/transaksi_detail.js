@@ -31,6 +31,10 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.INTEGER,
       allowNull: true
     },
+    qty: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
     harga: {
       type: DataTypes.INTEGER,
       allowNull: true
