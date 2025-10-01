@@ -15,16 +15,16 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.STRING(100),
       allowNull: true
     },
-    promoid: {
-      type: DataTypes.INTEGER,
+    promo_token: {
+      type: DataTypes.TEXT,
       allowNull: true
     },
-    produkid: {
-      type: DataTypes.INTEGER,
+    produk_token: {
+      type: DataTypes.TEXT,
       allowNull: true
     },
-    unitid: {
-      type: DataTypes.INTEGER,
+    unit_token: {
+      type: DataTypes.TEXT,
       allowNull: true
     },
     hours: {

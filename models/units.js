@@ -7,6 +7,10 @@ module.exports = function(sequelize, DataTypes) {
       allowNull: false,
       primaryKey: true
     },
+    token: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
     name: {
       type: DataTypes.STRING(20),
       allowNull: true
