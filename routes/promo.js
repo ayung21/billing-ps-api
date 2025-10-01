@@ -494,7 +494,7 @@ router.post('/', verifyToken, async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       `, {
         replacements: [
-          Math.random().toString(36).substring(2, 15), // Generate random token
+          'PRM-' + Math.random().toString(36).substring(2, 15), // Generate random token
           name,
           parseInt(unitid),
           cabangid,
@@ -672,7 +672,7 @@ router.put('/:id', verifyToken, async (req, res) => {
         WHERE id = ?
       `, {
         replacements: [
-          Math.random().toString(36).substring(2, 15), // Generate new random token
+          'PRM-' + Math.random().toString(36).substring(2, 15), // Generate new random token
           name || promo.name,
           unitid !== undefined ? (unitid ? parseInt(unitid) : null) : promo.unitid,
           discount_percent !== undefined ? (discount_percent ? parseInt(discount_percent) : null) : promo.discount_percent,
