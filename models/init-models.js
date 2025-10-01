@@ -41,6 +41,17 @@ function initModels(sequelize) {
   transaksi.hasMany(transaksi_detail, { foreignKey: 'code', sourceKey: 'code', as: 'details' });
   transaksi_detail.belongsTo(transaksi, { foreignKey: 'code', targetKey: 'code' });
 
+  // Relasi transaksi_detail ke units (unit_token <-> token)
+  transaksi_detail.belongsTo(units, { as: 'unit', foreignKey: 'unit_token', targetKey: 'token' });
+  units.hasMany(transaksi_detail, { as: 'transaksi_details', foreignKey: 'unit_token', sourceKey: 'token' });
+
+  // Relasi transaksi_detail ke promo (promo_token <-> token)
+  transaksi_detail.belongsTo(promo, { as: 'promo', foreignKey: 'promo_token', targetKey: 'token' });
+  promo.hasMany(transaksi_detail, { as: 'transaksi_details', foreignKey: 'promo_token', sourceKey: 'token' });
+
+  transaksi_detail.belongsTo(produk, { as: 'produk', foreignKey: 'produk_token', targetKey: 'token' });
+  produk.hasMany(transaksi_detail, { as: 'transaksi_details', foreignKey: 'produk_token', sourceKey: 'token' });
+
   return {
     access,
     billingsave,
