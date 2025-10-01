@@ -6,7 +6,7 @@ const { Op } = require('sequelize');
 const router = express.Router();
 
 // Import models
-let Transaksi, TransaksiDetail, Member, Unit, Promo, Produk;
+let Transaksi, TransaksiDetail, Member, Unit, Promo, Produk, Access;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
@@ -16,6 +16,7 @@ try {
   Unit = models.units;
   Promo = models.promo;
   Produk = models.produk;
+  Access = models.access;
   
   if (!Transaksi || !TransaksiDetail) {
     console.error('❌ Transaksi models not found');
@@ -87,14 +88,31 @@ router.get('/', verifyToken, async (req, res) => {
 
     whereClause.cabangid = { [Op.in]: cabangaccess };
 
-    const includeOptions = [];
-    if (include_details === 'true') {
-      includeOptions.push({
+    const includeOptions = [
+      {
         model: TransaksiDetail,
         as: 'details',
-        required: false
-      });
-    }
+        required: false,
+        // where: { produk_token: { [Op.ne]: null } },
+        include: [
+          {
+            model: Unit,
+            as: 'unit', // pastikan alias sesuai relasi di init-models.js
+            required: false
+          },
+          {
+            model: Promo,
+            as: 'promo', // pastikan alias sesuai relasi di init-models.js
+            required: false
+          },
+          {
+            model: Produk,
+            as: 'produk', // pastikan alias sesuai relasi di init-models.js
+            required: false
+          }
+        ]
+      }
+    ];
     
     const transactions = await Transaksi.findAndCountAll({
       where: whereClause,
@@ -104,9 +122,56 @@ router.get('/', verifyToken, async (req, res) => {
       order: [['createdAt', 'DESC']]
     });
 
+    // Mapping hasil agar produk menjadi array detail
+    const mappedData = transactions.rows.map(trx => ({
+      code: trx.code,
+      memberid: trx.memberid,
+      customer: trx.customer,
+      telepon: trx.telepon,
+      grandtotal: trx.grandtotal,
+      status: trx.status,
+      created_by: trx.created_by,
+      updated_by: trx.updated_by,
+      createdAt: trx.createdAt,
+      updatedAt: trx.updatedAt,
+      produk: (trx.details || [])
+        .filter(d => d.produk) // hanya jika ada relasi produk
+        .map(d => ({
+          product_id: d.id,
+          token: d.produk_token || d.token || null,
+          name: d.produk?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          produk_detail: d.produk // tampilkan detail produk jika ingin
+        })),
+      unit: (trx.details || [])
+        .filter(d => d.unit) // hanya jika ada relasi unit
+        .map(d => ({
+          unit_id: d.id,
+          token: d.unit_token || d.token || null,
+          name: d.unit?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          unit_detail: d.unit // tampilkan detail unit jika ingin
+        })),
+      promo: (trx.details || [])
+        .filter(d => d.promo) // hanya jika ada relasi promo
+        .map(d => ({
+          promo_id: d.id,
+          token: d.promo_token || d.token || null,
+          name: d.promo?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          promo_detail: d.promo // tampilkan detail promo jika ingin
+        }))
+    }));
+
     res.json({
       success: true,
-      data: transactions.rows,
+      data: mappedData,
       total: transactions.count,
       limit: parseInt(limit),
       offset: parseInt(offset)
