@@ -38,6 +38,8 @@ function initModels(sequelize) {
   brandtv.hasMany(units, { as: "units", foreignKey: "brandtvid"});
   units.belongsTo(cabang, { as: "cabang", foreignKey: "cabangid"});
   cabang.hasMany(units, { as: "units", foreignKey: "cabangid"});
+  transaksi.hasMany(transaksi_detail, { foreignKey: 'code', sourceKey: 'code', as: 'details' });
+  transaksi_detail.belongsTo(transaksi, { foreignKey: 'code', targetKey: 'code' });
 
   return {
     access,
