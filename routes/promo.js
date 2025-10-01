@@ -249,7 +249,7 @@ router.get('/allactive/:id', verifyToken, async (req, res) => {
 
       // Build final query with discount calculation - CAST to DECIMAL for precise calculation
       let query = `
-        SELECT p.id, p.name as promoname, p.discount_nominal, p.discount_percent, 
+        SELECT p.id, p.token, p.name as promoname, p.discount_nominal, p.discount_percent, 
                p.hours, p.status, p.createdAt, p.updatedAt, p.created_by, p.updated_by,
                u.id as unitid, u.name as unitname, u.price as unitprice,
                CAST(u.price * p.hours AS DECIMAL(15,2)) as before_discount,
