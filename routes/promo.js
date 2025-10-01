@@ -490,10 +490,11 @@ router.post('/', verifyToken, async (req, res) => {
 
       // Insert new promo - RAW QUERY
       const insertResult = await sequelize.query(`
-        INSERT INTO promo (name, unitid, cabangid, discount_percent, discount_nominal, hours, status, created_by, updated_by, createdAt, updatedAt)
+        INSERT INTO promo (token, name, unitid, cabangid, discount_percent, discount_nominal, hours, status, created_by, updated_by, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       `, {
         replacements: [
+          Math.random().toString(36).substring(2, 15), // Generate random token
           name,
           parseInt(unitid),
           cabangid,
@@ -639,7 +640,8 @@ router.put('/:id', verifyToken, async (req, res) => {
       // Update promo - RAW QUERY
       await sequelize.query(`
         UPDATE promo 
-        SET name = ?, 
+        SET token = ?,
+            name = ?, 
             unitid = ?, 
             discount_percent = ?, 
             discount_nominal = ?, 
@@ -650,6 +652,7 @@ router.put('/:id', verifyToken, async (req, res) => {
         WHERE id = ?
       `, {
         replacements: [
+          Math.random().toString(36).substring(2, 15), // Generate new random token
           name || promo.name,
           unitid !== undefined ? (unitid ? parseInt(unitid) : null) : promo.unitid,
           discount_percent !== undefined ? (discount_percent ? parseInt(discount_percent) : null) : promo.discount_percent,
@@ -665,10 +668,11 @@ router.put('/:id', verifyToken, async (req, res) => {
       // INSERT history_promo setelah update
       await sequelize.query(`
         INSERT INTO history_promo 
-        (promoid, name, unitid, cabangid, discount_percent, discount_nominal, hours, created_by, createdAt)
+        (token, promoid, name, unitid, cabangid, discount_percent, discount_nominal, hours, created_by, createdAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
       `, {
         replacements: [
+          promo.token,
           promoId,
           name || promo.name,
           unitid !== undefined ? (unitid ? parseInt(unitid) : null) : promo.unitid,

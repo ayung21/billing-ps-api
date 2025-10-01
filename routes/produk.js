@@ -261,6 +261,7 @@ router.post('/', verifyToken, async (req, res) => {
         }
 
         const newProduk = await Produk.create({
+            token: Math.random().toString(36).substring(2, 15), // Generate random token
             type: parseInt(type),
             name,
             stok: parseInt(stok),
@@ -368,6 +369,7 @@ router.put('/:id', verifyToken, async (req, res) => {
         }
 
         await produk.update({
+            token: Math.random().toString(36).substring(2, 15), // Generate random token
             type: type !== undefined ? parseInt(type) : produk.type,
             name: name || produk.name,
             stok: stok !== undefined ? parseInt(stok) : produk.stok,
@@ -379,6 +381,7 @@ router.put('/:id', verifyToken, async (req, res) => {
         });
 
         await HistoryUnit.create({
+            token: produk.token,
             produkid: produk.id,
             type: type !== undefined ? parseInt(type) : produk.type,
             name: name || produk.name,

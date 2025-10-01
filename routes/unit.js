@@ -640,6 +640,7 @@ router.post('/', verifyToken, async (req, res) => {
     }
 
     const newUnit = await Unit.create({
+      token: Math.random().toString(36).substring(2, 15), // Generate random token
       name,
       description: description || null,
       cabangid: cabang ? parseInt(cabang) : null,
@@ -778,6 +779,7 @@ router.put('/:id', verifyToken, async (req, res) => {
     }
     
     await unit.update({
+      token: Math.random().toString(36).substring(2, 15), // Generate random token
       name: name || unit.name,
       description: description !== undefined ? description : unit.description,
       cabangid: parsedCabangId,
@@ -790,6 +792,7 @@ router.put('/:id', verifyToken, async (req, res) => {
     // Create history record with description
     if (HistoryUnits) {
       await HistoryUnits.create({
+        token: unit.token,
         unitid: unit.id,
         name: unit.name,
         description: unit.description,
