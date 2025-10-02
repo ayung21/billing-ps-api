@@ -644,13 +644,19 @@ router.post('/', verifyToken, async (req, res) => {
       const product = products[i];
 
       // Validate required fields
-      if (!product.name) {
+      const check = await Produk.findOne({
+        where: { token: product.produk_token }
+      });
+
+      if (check.stok < product.quantity) {
         await dbTransaction.rollback();
         return res.status(400).json({
           success: false,
-          message: `Product at index ${i} is missing required field: name`
+          message: `Product ${i} is out of stock`
         });
       }
+
+      await check.update({ stok: check.stok - product.quantity }, { transaction: dbTransaction });
 
       // Validate unit if provided
       if (product.unitid && Unit) {
