@@ -93,7 +93,7 @@ router.get('/', verifyToken, async (req, res) => {
         model: TransaksiDetail,
         as: 'details',
         required: false,
-        // where: { produk_token: { [Op.ne]: null } },
+        where: { status: 1 },
         include: [
           {
             model: Unit,
@@ -279,6 +279,93 @@ router.get('/:code', verifyToken, async (req, res) => {
   }
 });
 
+router.delete('/deleteproduk/:id', verifyToken, async (req, res) => {
+  const dbTransaction = await sequelize.transaction();
+  try {
+    const { id } = req.params;
+
+    if (!id || isNaN(parseInt(id))) {
+      await dbTransaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Valid detail transaction ID is required'
+      });
+    }
+
+    // Cari detail transaksi berdasarkan ID
+    const detail = await TransaksiDetail.findOne({
+      where: { id: parseInt(id) },
+      transaction: dbTransaction
+    });
+
+    if (!detail) {
+      await dbTransaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction detail not found'
+      });
+    }
+
+    // Cek apakah detail sudah dihapus sebelumnya
+    if (detail.status === 0) {
+      await dbTransaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Transaction detail already deleted'
+      });
+    }
+
+    // Update status detail menjadi 0 (soft delete)
+    await detail.update({
+      status: 0,
+      updated_by: req.user?.userId || null
+    }, { transaction: dbTransaction });
+
+    // Hitung ulang grandtotal (hanya detail dengan status = 1)
+    const totalResult = await sequelize.query(`
+      SELECT SUM(harga * qty) as total_harga 
+      FROM transaksi_detail 
+      WHERE code = ? AND status = 1
+    `, {
+      replacements: [detail.code],
+      type: sequelize.QueryTypes.SELECT,
+      transaction: dbTransaction
+    });
+    
+    const newGrandTotal = totalResult[0]?.total_harga || 0;
+
+    // Update grandtotal di transaksi utama
+    await Transaksi.update({
+      grandtotal: newGrandTotal.toString(),
+      updated_by: req.user?.userId || null
+    }, {
+      where: { code: detail.code },
+      transaction: dbTransaction
+    });
+
+    await dbTransaction.commit();
+
+    res.json({
+      success: true,
+      message: 'Product deleted successfully and grandtotal updated',
+      data: {
+        deleted_detail_id: parseInt(id),
+        transaction_code: detail.code,
+        new_grandtotal: newGrandTotal
+      }
+    });
+
+  } catch (error) {
+    try { await dbTransaction.rollback(); } catch {}
+    console.error('Delete produk from detail_transaksi error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 router.post('/addproduk', verifyToken, async (req, res) => {
   const dbTransaction = await sequelize.transaction();
   try {
@@ -324,7 +411,7 @@ router.post('/addproduk', verifyToken, async (req, res) => {
         name: product.name,
         produk_token: product.produk_token ?? null,
         qty: product.quantity ? parseInt(product.quantity) : 1,
-        harga: product.price ? parseInt(product.price) * parseInt(product.quantity) : 0,
+        harga: product.price ? parseInt(product.price) : 0,
         status: 1,
         created_by: req.user?.userId || null,
         updated_by: req.user?.userId || null
@@ -336,9 +423,10 @@ router.post('/addproduk', verifyToken, async (req, res) => {
 
     // === Perbaikan: Gunakan raw query dengan transaction ===
     const totalResult = await sequelize.query(`
-      SELECT SUM(harga) as total_harga 
+      SELECT SUM(harga * qty) as total_harga 
       FROM transaksi_detail 
       WHERE code = ?
+      AND status = 1
     `, {
       replacements: [code],
       type: sequelize.QueryTypes.SELECT,
@@ -492,6 +580,7 @@ router.post('/', verifyToken, async (req, res) => {
       customer: customer_name || null,
       telepon: customer_phone || null,
       cabangid: cabang_id ? parseInt(cabang_id) : null,
+      qty: 1,
       grandtotal: total_price ? total_price.toString() : '0',
       status: 1,
       created_by: req.user?.userId || null,
