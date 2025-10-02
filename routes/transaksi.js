@@ -35,7 +35,7 @@ const generateTransactionCode = async () => {
   const day = now.getDate().toString().padStart(2, '0'); // 2 digit hari
   
   // Get today's date range for filtering
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
   const endOfDay = new Date(now.getFullYear(), now.getMonth(), 31, 23, 59, 59);
   
   try {
@@ -129,6 +129,7 @@ router.get('/', verifyToken, async (req, res) => {
       customer: trx.customer,
       telepon: trx.telepon,
       grandtotal: trx.grandtotal,
+      cabangid: trx.cabangid,
       status: trx.status,
       created_by: trx.created_by,
       updated_by: trx.updated_by,
@@ -152,6 +153,7 @@ router.get('/', verifyToken, async (req, res) => {
           token: d.unit_token || d.token || null,
           name: d.unit?.name || d.name,
           quantity: d.qty || d.quantity || 1,
+          hours: d.hours || 1,
           price: d.harga || d.price || 0,
           total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
           unit_detail: d.unit // tampilkan detail unit jika ingin
@@ -277,6 +279,113 @@ router.get('/:code', verifyToken, async (req, res) => {
   }
 });
 
+router.post('/addproduk', verifyToken, async (req, res) => {
+  const dbTransaction = await sequelize.transaction();
+  try {
+    const { code, products } = req.body;
+    console.log(req.body);
+
+    if (!code || !products || !Array.isArray(products) || products.length === 0) {
+      await dbTransaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Transaction code and products array are required'
+      });
+    }
+
+    // Cek transaksi utama
+    const trx = await Transaksi.findOne({ 
+      where: { code },
+      transaction: dbTransaction // tambahkan transaction
+    });
+    if (!trx) {
+      await dbTransaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
+      });
+    }
+
+    const createdDetails = [];
+    for (let i = 0; i < products.length; i++) {
+      const product = products[i];
+
+      // Validasi minimal: nama produk
+      if (!product.name) {
+        await dbTransaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Product at index ${i} is missing required field: name`
+        });
+      }
+
+      const detailData = {
+        code,
+        name: product.name,
+        produk_token: product.produk_token ?? null,
+        qty: product.quantity ? parseInt(product.quantity) : 1,
+        harga: product.price ? parseInt(product.price) * parseInt(product.quantity) : 0,
+        status: 1,
+        created_by: req.user?.userId || null,
+        updated_by: req.user?.userId || null
+      };
+
+      const createdDetail = await TransaksiDetail.create(detailData, { transaction: dbTransaction });
+      createdDetails.push(createdDetail);
+    }
+
+    // === Perbaikan: Gunakan raw query dengan transaction ===
+    const totalResult = await sequelize.query(`
+      SELECT SUM(harga) as total_harga 
+      FROM transaksi_detail 
+      WHERE code = ?
+    `, {
+      replacements: [code],
+      type: sequelize.QueryTypes.SELECT,
+      transaction: dbTransaction // penting: gunakan transaction
+    });
+    
+    const newGrandTotal = totalResult[0]?.total_harga || 0;
+
+    console.log('New grandtotal calculated:', newGrandTotal);
+
+    // Update transaksi utama
+    await trx.update({ 
+      grandtotal: newGrandTotal.toString() 
+    }, { 
+      transaction: dbTransaction 
+    });
+
+    await dbTransaction.commit();
+
+    // Ambil detail yang baru saja ditambahkan (beserta relasi jika perlu)
+    const detailIds = createdDetails.map(d => d.id);
+    const newDetails = await TransaksiDetail.findAll({
+      where: { id: { [Op.in]: detailIds } },
+      include: [
+        { model: Produk, as: 'produk', required: false },
+        { model: Unit, as: 'unit', required: false },
+        { model: Promo, as: 'promo', required: false }
+      ]
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Produk berhasil ditambahkan ke detail transaksi dan grandtotal diupdate',
+      data: newDetails,
+      grandtotal: newGrandTotal
+    });
+  } catch (error) {
+    try { await dbTransaction.rollback(); } catch {}
+    console.error('Add produk to detail_transaksi error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Create new transaction with details (admin only)
 router.post('/', verifyToken, async (req, res) => {
   const dbTransaction = await sequelize.transaction();
@@ -368,7 +477,6 @@ router.post('/', verifyToken, async (req, res) => {
     //   data: transactionCode
     // });
     // return;
-
     if (codeExists) {
       await dbTransaction.rollback();
       return res.status(500).json({
@@ -492,18 +600,91 @@ router.post('/', verifyToken, async (req, res) => {
     transactionFinished = true;
 
     // Fetch complete transaction with details
-    const completeTransaction = await Transaksi.findOne({
-      where: { code: transactionCode },
-      include: [{
+
+    const includeOptions = [
+      {
         model: TransaksiDetail,
-        as: 'details'
-      }]
+        as: 'details',
+        required: false,
+        // where: { produk_token: { [Op.ne]: null } },
+        include: [
+          {
+            model: Unit,
+            as: 'unit', // pastikan alias sesuai relasi di init-models.js
+            required: false
+          },
+          {
+            model: Promo,
+            as: 'promo', // pastikan alias sesuai relasi di init-models.js
+            required: false
+          },
+          {
+            model: Produk,
+            as: 'produk', // pastikan alias sesuai relasi di init-models.js
+            required: false
+          }
+        ]
+      }
+    ];
+    
+    const trx = await Transaksi.findOne({
+      where: { code: transactionCode },
+      include: includeOptions
     });
+
+    const mappedData = {
+      code: trx.code,
+      memberid: trx.memberid,
+      customer: trx.customer,
+      telepon: trx.telepon,
+      grandtotal: trx.grandtotal,
+      cabangid: trx.cabangid,
+      status: trx.status,
+      created_by: trx.created_by,
+      updated_by: trx.updated_by,
+      createdAt: trx.createdAt,
+      updatedAt: trx.updatedAt,
+      produk: (trx.details || [])
+        .filter(d => d.produk)
+        .map(d => ({
+          product_id: d.id,
+          token: d.produk_token || d.token || null,
+          name: d.produk?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          produk_detail: d.produk
+        })),
+      unit: (trx.details || [])
+        .filter(d => d.unit)
+        .map(d => ({
+          unit_id: d.id,
+          token: d.unit_token || d.token || null,
+          name: d.unit?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          hours: d.hours || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          unit_detail: d.unit
+        })),
+      promo: (trx.details || [])
+        .filter(d => d.promo)
+        .map(d => ({
+          promo_id: d.id,
+          token: d.promo_token || d.token || null,
+          name: d.promo?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          promo_detail: d.promo
+        }))
+    };
+
 
     res.status(201).json({
       success: true,
       message: 'Transaction created successfully',
-      data: completeTransaction
+      data: mappedData
     });
 
   } catch (error) {
