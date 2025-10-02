@@ -6,7 +6,7 @@ const { Op } = require('sequelize');
 const router = express.Router();
 
 // Import models
-let Transaksi, TransaksiDetail, Member, Unit, Promo, Produk, Access;
+let Transaksi, TransaksiDetail, Member, Unit, Promo, Produk, Access, HistoryProduk;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
@@ -17,6 +17,7 @@ try {
   Promo = models.promo;
   Produk = models.produk;
   Access = models.access;
+  HistoryProduk = models.history_produk;
   
   if (!Transaksi || !TransaksiDetail) {
     console.error('❌ Transaksi models not found');
@@ -334,6 +335,36 @@ router.delete('/deleteproduk/:id', verifyToken, async (req, res) => {
     
     const newGrandTotal = totalResult[0]?.total_harga || 0;
 
+    const historyproduk = await HistoryProduk.findOne({
+      where: {token : detail.produk_token}
+    });
+
+    if(historyproduk){
+      const produk = await Produk.findOne({
+        where: { id : historyproduk.produkid }
+      });
+
+      if(produk){
+        await produk.update({
+          stok: produk.stok + detail.qty
+        }, {
+          transaction: dbTransaction
+        });
+      }
+    }else{
+      const produk = await Produk.findOne({
+        where: { token : detail.produk_token }
+      });
+
+      if(produk){
+        await produk.update({
+          stok: produk.stok + detail.qty
+        }, {
+          transaction: dbTransaction
+        });
+      }
+    }
+
     // Update grandtotal di transaksi utama
     await Transaksi.update({
       grandtotal: newGrandTotal.toString(),
@@ -370,7 +401,6 @@ router.post('/addproduk', verifyToken, async (req, res) => {
   const dbTransaction = await sequelize.transaction();
   try {
     const { code, products } = req.body;
-    console.log(req.body);
 
     if (!code || !products || !Array.isArray(products) || products.length === 0) {
       await dbTransaction.rollback();
@@ -390,6 +420,19 @@ router.post('/addproduk', verifyToken, async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Transaction not found'
+      });
+    }
+
+    // cek stock
+    const stock = await Produk.findOne({
+      where: { token: products[0].produk_token },
+    });
+
+    if(stock.stok < products[0].quantity){
+      await dbTransaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Stok tidak mencukupi'
       });
     }
 
@@ -435,13 +478,19 @@ router.post('/addproduk', verifyToken, async (req, res) => {
     
     const newGrandTotal = totalResult[0]?.total_harga || 0;
 
-    console.log('New grandtotal calculated:', newGrandTotal);
-
     // Update transaksi utama
     await trx.update({ 
       grandtotal: newGrandTotal.toString() 
     }, { 
       transaction: dbTransaction 
+    });
+
+    // update stok produk
+    await Produk.update({
+      stok: stock.stok - products[0].quantity
+    }, {
+      where: { token: products[0].produk_token },
+      transaction: dbTransaction
     });
 
     await dbTransaction.commit();
