@@ -6,13 +6,13 @@ const { Op } = require('sequelize');
 const router = express.Router();
 
 // Import model produk
-let Produk, Cabang, HistoryUnit, Access;
+let Produk, Cabang, HistoryProduk, Access;
 try {
     const initModels = require('../models/init-models');
     const models = initModels(sequelize);
     Produk = models.produk;
     Cabang = models.cabang;
-    HistoryUnit = models.history_produk;
+    HistoryProduk = models.history_produk;
     Access = models.access;
 
     if (!Produk) {
@@ -368,7 +368,7 @@ router.put('/:id', verifyToken, async (req, res) => {
             }
         }
         
-        await HistoryUnit.create({
+        await HistoryProduk.create({
             token: produk.token,
             produkid: produk.id,
             type: type !== undefined ? parseInt(type) : produk.type,
