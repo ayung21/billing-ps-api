@@ -2,6 +2,7 @@ const express = require('express');
 const { verifyToken, verifyAdmin, verifyUser } = require('../middleware/auth');
 const { sequelize } = require('../config/database');
 const { Op } = require('sequelize');
+const { exec } = require("child_process");
 
 const router = express.Router();
 
@@ -18,7 +19,7 @@ try {
   Produk = models.produk;
   Access = models.access;
   HistoryProduk = models.history_produk;
-  
+
   if (!Transaksi || !TransaksiDetail) {
     console.error('❌ Transaksi models not found');
   } else {
@@ -34,11 +35,11 @@ const generateTransactionCode = async () => {
   const year = now.getFullYear().toString(); // 4 digit tahun
   const month = (now.getMonth() + 1).toString().padStart(2, '0'); // 2 digit bulan
   const day = now.getDate().toString().padStart(2, '0'); // 2 digit hari
-  
+
   // Get today's date range for filtering
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
   const endOfDay = new Date(now.getFullYear(), now.getMonth(), 31, 23, 59, 59);
-  
+
   try {
     // Count today's transactions to get next sequential number
     const todayTransactionCount = await Transaksi.count({
@@ -63,6 +64,55 @@ const generateTransactionCode = async () => {
   }
 };
 
+// Ubah executeAdbControl menjadi Promise-based function
+const executeAdbControl = (ip, adbCommand) => {
+  return new Promise((resolve, reject) => {
+    const fullAdbAddress = `${ip}:5555`;
+    const connectCmd = `adb connect ${fullAdbAddress}`;
+
+    exec(connectCmd, { timeout: 10000 }, (connectError, connectStdout, connectStderr) => {
+
+      if (connectError || connectStderr.includes("unable to connect")) {
+        console.log('❌ Connection failed');
+        return reject({
+          success: false,
+          message: `❌ Gagal terhubung ke TV (${ip}).`,
+          details: "Pastikan TV menyala, Network Debugging/ADB aktif, dan tidak terhalang firewall/VPN.",
+          adb_output: connectStderr.trim() || connectStdout.trim()
+        });
+      }
+
+      // 2. KONEKSI BERHASIL, jalankan PERINTAH KONTROL
+      const controlCmd = `adb -s ${fullAdbAddress} ${adbCommand}`;
+
+      exec(controlCmd, (controlError, controlStdout, controlStderr) => {
+        // Opsional: Coba putuskan koneksi setelah selesai
+        exec(`adb disconnect ${fullAdbAddress}`);
+
+        if (controlError) {
+          console.log('❌ Control command failed');
+          return reject({
+            success: false,
+            message: `⚠️ Terhubung, tetapi perintah kontrol gagal dijalankan.`,
+            error: controlStderr.trim(),
+            command_executed: adbCommand
+          });
+        }
+
+        console.log('✅ Control command success');
+        // 3. KONTROL BERHASIL
+        resolve({
+          success: true,
+          ip: ip,
+          message: `✅ Perintah '${adbCommand}' berhasil dikirim ke TV.`,
+          command_executed: adbCommand,
+          output: controlStdout.trim()
+        });
+      });
+    });
+  });
+};
+
 // Get all transactions (protected)
 router.get('/', verifyToken, async (req, res) => {
   try {
@@ -76,15 +126,15 @@ router.get('/', verifyToken, async (req, res) => {
     const { status, memberid, limit = 50, offset = 0, include_details = false } = req.query;
     let cabangaccess = [];
     let whereClause = {};
-    
+
     const _access = await Access.findAll({
-        where: {
-            userId: req.user.userId
-        }
+      where: {
+        userId: req.user.userId
+      }
     });
-    
+
     for (const __access of _access) {
-        cabangaccess.push(__access.cabangid);
+      cabangaccess.push(__access.cabangid);
     }
 
     whereClause.cabangid = { [Op.in]: cabangaccess };
@@ -114,7 +164,7 @@ router.get('/', verifyToken, async (req, res) => {
         ]
       }
     ];
-    
+
     const transactions = await Transaksi.findAndCountAll({
       where: whereClause,
       include: includeOptions,
@@ -122,7 +172,6 @@ router.get('/', verifyToken, async (req, res) => {
       offset: parseInt(offset),
       order: [['createdAt', 'DESC']]
     });
-
     // Mapping hasil agar produk menjadi array detail
     const mappedData = transactions.rows.map(trx => ({
       code: trx.code,
@@ -181,8 +230,8 @@ router.get('/', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get transactions error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -200,11 +249,11 @@ router.get('/stats/overview', verifyToken, verifyAdmin, async (req, res) => {
     }
 
     const totalTransactions = await Transaksi.count();
-    
+
     const activeTransactions = await Transaksi.count({
       where: { status: '1' } // status main
     });
-    
+
     const completedTransactions = await Transaksi.count({
       where: { status: '0' } // status selesai
     });
@@ -231,8 +280,8 @@ router.get('/stats/overview', verifyToken, verifyAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Get transaction stats error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -258,11 +307,11 @@ router.get('/:code', verifyToken, async (req, res) => {
         required: false
       }]
     });
-    
+
     if (!transaction) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Transaction not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
       });
     }
 
@@ -272,8 +321,8 @@ router.get('/:code', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get transaction error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -332,31 +381,31 @@ router.delete('/deleteproduk/:id', verifyToken, async (req, res) => {
       type: sequelize.QueryTypes.SELECT,
       transaction: dbTransaction
     });
-    
+
     const newGrandTotal = totalResult[0]?.total_harga || 0;
 
     const historyproduk = await HistoryProduk.findOne({
-      where: {token : detail.produk_token}
+      where: { token: detail.produk_token }
     });
 
-    if(historyproduk){
+    if (historyproduk) {
       const produk = await Produk.findOne({
-        where: { id : historyproduk.produkid }
+        where: { id: historyproduk.produkid }
       });
 
-      if(produk){
+      if (produk) {
         await produk.update({
           stok: produk.stok + detail.qty
         }, {
           transaction: dbTransaction
         });
       }
-    }else{
+    } else {
       const produk = await Produk.findOne({
-        where: { token : detail.produk_token }
+        where: { token: detail.produk_token }
       });
 
-      if(produk){
+      if (produk) {
         await produk.update({
           stok: produk.stok + detail.qty
         }, {
@@ -387,7 +436,7 @@ router.delete('/deleteproduk/:id', verifyToken, async (req, res) => {
     });
 
   } catch (error) {
-    try { await dbTransaction.rollback(); } catch {}
+    try { await dbTransaction.rollback(); } catch { }
     console.error('Delete produk from detail_transaksi error:', error);
     res.status(500).json({
       success: false,
@@ -411,7 +460,7 @@ router.post('/addproduk', verifyToken, async (req, res) => {
     }
 
     // Cek transaksi utama
-    const trx = await Transaksi.findOne({ 
+    const trx = await Transaksi.findOne({
       where: { code },
       transaction: dbTransaction // tambahkan transaction
     });
@@ -428,7 +477,7 @@ router.post('/addproduk', verifyToken, async (req, res) => {
       where: { token: products[0].produk_token },
     });
 
-    if(stock.stok < products[0].quantity){
+    if (stock.stok < products[0].quantity) {
       await dbTransaction.rollback();
       return res.status(400).json({
         success: false,
@@ -475,14 +524,14 @@ router.post('/addproduk', verifyToken, async (req, res) => {
       type: sequelize.QueryTypes.SELECT,
       transaction: dbTransaction // penting: gunakan transaction
     });
-    
+
     const newGrandTotal = totalResult[0]?.total_harga || 0;
 
     // Update transaksi utama
-    await trx.update({ 
-      grandtotal: newGrandTotal.toString() 
-    }, { 
-      transaction: dbTransaction 
+    await trx.update({
+      grandtotal: newGrandTotal.toString()
+    }, {
+      transaction: dbTransaction
     });
 
     // update stok produk
@@ -513,7 +562,7 @@ router.post('/addproduk', verifyToken, async (req, res) => {
       grandtotal: newGrandTotal
     });
   } catch (error) {
-    try { await dbTransaction.rollback(); } catch {}
+    try { await dbTransaction.rollback(); } catch { }
     console.error('Add produk to detail_transaksi error:', error);
     res.status(500).json({
       success: false,
@@ -527,7 +576,7 @@ router.post('/addproduk', verifyToken, async (req, res) => {
 router.post('/', verifyToken, async (req, res) => {
   const dbTransaction = await sequelize.transaction();
   let transactionFinished = false;
-  
+
   try {
     if (!Transaksi || !TransaksiDetail) {
       return res.status(500).json({
@@ -536,12 +585,12 @@ router.post('/', verifyToken, async (req, res) => {
       });
     }
 
-    const { 
+    const {
       memberid,
       cabang_id,
-      customer_name, 
-      customer_phone, 
-      total_price, 
+      customer_name,
+      customer_phone,
+      total_price,
       rental_price,
       status = '1',
       products,
@@ -549,7 +598,7 @@ router.post('/', verifyToken, async (req, res) => {
       promo_token,
       duration
     } = req.body;
-    
+
     // Validation
     // console.log(req.body);
     // res.json({
@@ -560,9 +609,9 @@ router.post('/', verifyToken, async (req, res) => {
     // return;
     if (!customer_name) {
       await dbTransaction.rollback();
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Either customer name or member ID is required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Either customer name or member ID is required'
       });
     }
 
@@ -593,7 +642,7 @@ router.post('/', verifyToken, async (req, res) => {
     let transactionCode;
     let codeExists = true;
     let attempts = 0;
-    
+
     while (codeExists && attempts < 10) {
       transactionCode = await generateTransactionCode();
       const existing = await Transaksi.findOne({
@@ -601,7 +650,7 @@ router.post('/', verifyToken, async (req, res) => {
       });
       codeExists = !!existing;
       attempts++;
-      
+
       // If code exists, wait a moment before trying again
       if (codeExists) {
         await new Promise(resolve => setTimeout(resolve, 10));
@@ -645,7 +694,7 @@ router.post('/', verifyToken, async (req, res) => {
 
       // Validate required fields
       const check = await Produk.findOne({
-        where: { token: product.produk_token }
+        where: { token: product.product_token }
       });
 
       if (check.stok < product.quantity) {
@@ -770,7 +819,7 @@ router.post('/', verifyToken, async (req, res) => {
         ]
       }
     ];
-    
+
     const trx = await Transaksi.findOne({
       where: { code: transactionCode },
       include: includeOptions
@@ -824,6 +873,16 @@ router.post('/', verifyToken, async (req, res) => {
         }))
     };
 
+    const getIP = await sequelize.query(`
+      SELECT b.* FROM units u 
+      JOIN brandtv b ON b.id = u.brandtvid
+      WHERE u.status = 1 AND u.token = ?
+    `, {
+      replacements: [unit_token],
+      type: sequelize.QueryTypes.SELECT,
+    });
+
+    const onTv = executeAdbControl(getIP[0].ip_address, 'shell input keyevent 26', res);
 
     res.status(201).json({
       success: true,
@@ -840,8 +899,8 @@ router.post('/', verifyToken, async (req, res) => {
       }
     }
     console.error('Create transaction error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -849,7 +908,7 @@ router.post('/', verifyToken, async (req, res) => {
 });
 
 // Update transaction (admin only)
-router.put('/:code', verifyToken, verifyAdmin, async (req, res) => {
+router.put('/offtv/:code', verifyToken, async (req, res) => {
   try {
     if (!Transaksi) {
       return res.status(500).json({
@@ -859,49 +918,88 @@ router.put('/:code', verifyToken, verifyAdmin, async (req, res) => {
     }
 
     const { code } = req.params;
-    const transaction = await Transaksi.findOne({ where: { code } });
-    
+    const transaction = await Transaksi.findOne({
+      where: { code, status: 1 },
+      include: [{
+        model: TransaksiDetail,
+        as: 'details',
+        required: false,
+        where: { status: 1 }, // hanya detail yang aktif
+        include: [
+          {
+            model: Unit,
+            as: 'unit',
+            required: false
+          },
+        ]
+      }]
+    });
+
+    const unitTokens = transaction.details
+      .filter(detail => detail.unit_token)
+      .map(detail => detail.unit_token);
+
     if (!transaction) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Transaction not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
       });
     }
 
     const { memberid, customer, telepon, grandtotal, status } = req.body;
-    
+
     // Validate member if provided
-    if (memberid && Member) {
-      const member = await Member.findOne({
-        where: { id: parseInt(memberid), status: 1 }
+    // if (memberid && Member) {
+    // const trx = await Transaksi.findOne({
+    //   where: { code: code, status: 1 }
+    // });
+
+    // if (!trx) {
+    //   return res.status(404).json({
+    //     success: false,
+    //     message: 'Invalid member ID or member is inactive'
+    //   });
+    // }
+    // }
+
+    const getIP = await sequelize.query(`
+      SELECT b.* FROM units u 
+      JOIN brandtv b ON b.id = u.brandtvid
+      WHERE u.status = 1 AND u.token = ?
+    `, {
+      replacements: [unitTokens[0]],
+      type: sequelize.QueryTypes.SELECT
+    });
+
+    try {
+      const adbResult = await executeAdbControl(getIP[0].ip_address, 'shell input keyevent 26', res);
+      console.log('ADB Control Success:', adbResult);
+      
+      await transaction.update({
+        status: 0,
+        updated_by: req.user?.userId || transaction.updated_by
       });
-
-      if (!member) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid member ID or member is inactive'
-        });
-      }
+      
+      res.json({
+        success: true,
+        message: 'Transaction updated successfully',
+        data: transaction,
+        adb_result: adbResult
+      });
+    } catch (adbError) {
+      console.error('ADB Control Failed:', adbError);
+      
+      res.status(503).json({
+        success: false,
+        message: 'Failed to turn off TV',
+        error: adbError
+      });
     }
-    
-    await transaction.update({
-      memberid: memberid !== undefined ? (memberid ? parseInt(memberid) : null) : transaction.memberid,
-      customer: customer !== undefined ? customer : transaction.customer,
-      telepon: telepon !== undefined ? telepon : transaction.telepon,
-      grandtotal: grandtotal !== undefined ? grandtotal.toString() : transaction.grandtotal,
-      status: status !== undefined ? status.toString() : transaction.status,
-      updated_by: req.user?.userId || transaction.updated_by
-    });
 
-    res.json({
-      success: true,
-      message: 'Transaction updated successfully',
-      data: transaction
-    });
   } catch (error) {
     console.error('Update transaction error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -920,7 +1018,7 @@ router.put('/:code/status', verifyToken, verifyAdmin, async (req, res) => {
 
     const { code } = req.params;
     const { status } = req.body;
-    
+
     if (status === undefined || !['0', '1'].includes(status.toString())) {
       return res.status(400).json({
         success: false,
@@ -929,7 +1027,7 @@ router.put('/:code/status', verifyToken, verifyAdmin, async (req, res) => {
     }
 
     const transaction = await Transaksi.findOne({ where: { code } });
-    
+
     if (!transaction) {
       return res.status(404).json({
         success: false,
@@ -937,7 +1035,7 @@ router.put('/:code/status', verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    await transaction.update({ 
+    await transaction.update({
       status: status.toString(),
       updated_by: req.user?.userId || null
     });
@@ -949,8 +1047,8 @@ router.put('/:code/status', verifyToken, verifyAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Update transaction status error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -969,7 +1067,7 @@ router.get('/status/:status', verifyToken, verifyUser, async (req, res) => {
 
     const { status } = req.params;
     const { limit = 50, offset = 0, include_details = false } = req.query;
-    
+
     if (!['0', '1'].includes(status)) {
       return res.status(400).json({
         success: false,
@@ -1009,8 +1107,8 @@ router.get('/status/:status', verifyToken, verifyUser, async (req, res) => {
     });
   } catch (error) {
     console.error('Get transactions by status error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -1029,7 +1127,7 @@ router.get('/member/:memberid', verifyToken, verifyUser, async (req, res) => {
 
     const { memberid } = req.params;
     const { status, limit = 50, offset = 0, include_details = false } = req.query;
-    
+
     let whereClause = {
       memberid: parseInt(memberid)
     };
@@ -1065,8 +1163,8 @@ router.get('/member/:memberid', verifyToken, verifyUser, async (req, res) => {
     });
   } catch (error) {
     console.error('Get transactions by member error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -1086,7 +1184,7 @@ router.get('/stats/today', verifyToken, verifyAdmin, async (req, res) => {
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
     const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
-    
+
     const todayCount = await Transaksi.count({
       where: {
         createdAt: {
@@ -1112,8 +1210,8 @@ router.get('/stats/today', verifyToken, verifyAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Get today stats error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
