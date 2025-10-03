@@ -443,7 +443,6 @@ router.get('/available-tv/edit/:id/:ids', verifyToken, async (req, res) => {
   }
 });
 
-// Get all units (protected) - UPDATE
 router.get('/allactive/:id', verifyToken, async (req, res) => {
   try {
     if (!Unit) {
@@ -458,18 +457,95 @@ router.get('/allactive/:id', verifyToken, async (req, res) => {
     
     let whereClause = {};
 
-    // const _access = await Access.findAll({
-    //     where: {
-    //         userId: req.user.userId
-    //     }
-    // });
+    whereClause.cabangid = _cabang;
+    whereClause.status = 1;
+
+    // Setup include untuk join
+    const includeOptions = [];
     
-    // for (const __access of _access) {
-    //     cabangaccess.push(__access.cabangid);
-    // }
+    if (include_relations === 'true') {
+      // Join dengan Brandtv - UPDATE: gunakan ip_address
+      if (Brandtv) {
+        includeOptions.push({
+          model: Brandtv,
+          as: 'brandtv',
+          attributes: ['id', 'name', 'codetvid', 'ip_address'], // UPDATE: ip_address
+          required: false // LEFT JOIN
+        });
+      }
+      
+      // Join dengan Cabang
+      if (Cabang) {
+        includeOptions.push({
+          model: Cabang,
+          as: 'cabang',
+          attributes: ['id', 'name', 'status'],
+          required: false // LEFT JOIN
+        });
+      }
+    }
+    
+    const units = await Unit.findAndCountAll({
+      where: whereClause,
+      include: includeOptions,
+      attributes: ['id', 'token', 'name', 'description', 'brandtvid', 'cabangid', 'price', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      order: [['id', 'ASC']]
+    });
+
+    res.json({
+      success: true,
+      data: units.rows,
+      total: units.count,
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+  } catch (error) {
+    console.error('Get units error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+router.get('/allactiveready/:id', verifyToken, async (req, res) => {
+  try {
+    if (!Unit) {
+      return res.status(500).json({
+        success: false,
+        message: 'Units model not available'
+      });
+    }
+
+    const { status, cabang, brandtvid, limit = 50, offset = 0, include_relations = false } = req.query;
+    const _cabang = req.params.id;
+
+    const checkNotReady = await sequelize.query(`
+      SELECT COALESCE(u.id, hu.unitid, 0) as id 
+      FROM transaksi t
+      JOIN transaksi_detail td ON td.code = t.code
+      LEFT JOIN units u ON u.token = td.unit_token
+      LEFT JOIN history_units hu ON hu.token = td.unit_token
+      WHERE t.status = 1
+      AND td.unit_token IS NOT NULL
+    `, {
+      type: sequelize.QueryTypes.SELECT
+    });
+
+    // Langsung dapat array ID tanpa loop for
+    const notready = checkNotReady.map(row => row.id);
+    
+    let whereClause = {};
 
     whereClause.cabangid = _cabang;
     whereClause.status = 1;
+
+    if (notready.length > 0) {
+      whereClause.id = { [Op.notIn]: notready };
+    }
 
     // Setup include untuk join
     const includeOptions = [];
