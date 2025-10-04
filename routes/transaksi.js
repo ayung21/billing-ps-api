@@ -789,6 +789,21 @@ router.post('/', verifyToken, async (req, res) => {
     //   }, { transaction: dbTransaction });
     // }
 
+    // === COBA ADB CONTROL SEBELUM COMMIT ===
+    const getIP = await sequelize.query(`
+      SELECT b.* FROM units u 
+      JOIN brandtv b ON b.id = u.brandtvid
+      WHERE u.status = 1 AND u.token = ?
+    `, {
+      replacements: [unit_token],
+      type: sequelize.QueryTypes.SELECT,
+    });
+
+    console.log('Testing ADB control before commit...');
+    const adbResult = await executeAdbControl(getIP[0].ip_address, 'shell input keyevent 26');
+    console.log('ADB Control Success:', adbResult);
+
+    // ADB berhasil, commit transaksi
     await dbTransaction.commit();
     transactionFinished = true;
 
@@ -873,31 +888,31 @@ router.post('/', verifyToken, async (req, res) => {
         }))
     };
 
-    const getIP = await sequelize.query(`
-      SELECT b.* FROM units u 
-      JOIN brandtv b ON b.id = u.brandtvid
-      WHERE u.status = 1 AND u.token = ?
-    `, {
-      replacements: [unit_token],
-      type: sequelize.QueryTypes.SELECT,
-    });
-
-    const onTv = executeAdbControl(getIP[0].ip_address, 'shell input keyevent 26', res);
-
     res.status(201).json({
       success: true,
-      message: 'Transaction created successfully',
-      data: mappedData
+      message: 'Transaction created successfully and TV turned on',
+      data: mappedData,
+      adb_result: adbResult
     });
 
   } catch (error) {
-    if (dbTransaction && !transactionFinished) {
-      try {
-        await dbTransaction.rollback();
-      } catch (rollbackError) {
-        console.error('Rollback error:', rollbackError);
-      }
+    // Rollback jika ADB gagal atau error lain
+    try {
+      await dbTransaction.rollback();
+      console.log('Transaction rolled back due to error:', error.message || error);
+    } catch (rollbackError) {
+      console.error('Rollback error:', rollbackError);
     }
+
+    // Jika error dari ADB control
+    if (error.success === false && error.message) {
+      return res.status(503).json({
+        success: false,
+        message: 'Transaction cancelled - TV control failed',
+        error: error
+      });
+    }
+
     console.error('Create transaction error:', error);
     res.status(500).json({
       success: false,
@@ -973,7 +988,6 @@ router.put('/offtv/:code', verifyToken, async (req, res) => {
 
     try {
       const adbResult = await executeAdbControl(getIP[0].ip_address, 'shell input keyevent 26', res);
-      console.log('ADB Control Success:', adbResult);
       
       await transaction.update({
         status: 0,
