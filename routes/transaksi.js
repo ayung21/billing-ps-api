@@ -3,6 +3,7 @@ const { verifyToken, verifyAdmin, verifyUser } = require('../middleware/auth');
 const { sequelize } = require('../config/database');
 const { Op } = require('sequelize');
 const { exec } = require("child_process");
+const history_units = require('../models/history_units');
 
 const router = express.Router();
 
@@ -1028,29 +1029,33 @@ router.put('/offtv/:code', verifyToken, async (req, res) => {
 
     const { memberid, customer, telepon, grandtotal, status } = req.body;
 
-    // Validate member if provided
-    // if (memberid && Member) {
-    // const trx = await Transaksi.findOne({
-    //   where: { code: code, status: 1 }
-    // });
-
-    // if (!trx) {
-    //   return res.status(404).json({
-    //     success: false,
-    //     message: 'Invalid member ID or member is inactive'
-    //   });
-    // }
-    // }
-
-    const getIP = await sequelize.query(`
-      SELECT b.*, c.* FROM units u 
-      JOIN brandtv b ON b.id = u.brandtvid
-      JOIN codetv c ON c.id = b.codetvid
-      WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
-    `, {
-      replacements: [unitTokens[0]],
-      type: sequelize.QueryTypes.SELECT
+    const checkunit = await history_units.findOne({
+      where: { token: unitTokens[0] }
     });
+
+    let getIP = [];
+    if (!checkunit) {
+      getIP = await sequelize.query(`
+        SELECT b.*, c.* FROM units u 
+        JOIN brandtv b ON b.id = u.brandtvid
+        JOIN codetv c ON c.id = b.codetvid
+        WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
+      `, {
+        replacements: [unitTokens[0]],
+        type: sequelize.QueryTypes.SELECT
+      });
+    }else{
+      getIP = await sequelize.query(`
+        SELECT b.*, c.* FROM units u 
+        JOIN brandtv b ON b.id = u.brandtvid
+        JOIN codetv c ON c.id = b.codetvid
+        WHERE u.status = 1 AND c.desc = 'on/off' AND u.id = ?
+      `, {
+        replacements: [checkunit.unitid],
+        type: sequelize.QueryTypes.SELECT
+      });
+    }
+
 
     try {
       const adbResult = await executeAdbControl(getIP[0].ip_address, getIP[0].command, res);
