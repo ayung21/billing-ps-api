@@ -1058,7 +1058,7 @@ router.put('/offtv/:code', verifyToken, async (req, res) => {
 
 
     try {
-      const adbResult = await executeAdbControl(getIP[0].ip_address, getIP[0].command, res);
+      const adbResult = await executeAdbControl(getIP[0].ip_address, getIP[0].command);
       
       await transaction.update({
         status: 0,
