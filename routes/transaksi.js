@@ -299,25 +299,89 @@ router.get('/:code', verifyToken, async (req, res) => {
     }
 
     const { code } = req.params;
-    const transaction = await Transaksi.findOne({
-      where: { code },
-      include: [{
+    const includeOptions = [
+      {
         model: TransaksiDetail,
         as: 'details',
-        required: false
-      }]
+        required: false,
+        where: { status: 1 },
+        include: [
+          {
+            model: Unit,
+            as: 'unit', // pastikan alias sesuai relasi di init-models.js
+            required: false
+          },
+          {
+            model: Promo,
+            as: 'promo', // pastikan alias sesuai relasi di init-models.js
+            required: false
+          },
+          {
+            model: Produk,
+            as: 'produk', // pastikan alias sesuai relasi di init-models.js
+            required: false
+          }
+        ]
+      }
+    ];
+
+    const trx = await Transaksi.findOne({
+      where: { code: code },
+      include: includeOptions
     });
 
-    if (!transaction) {
-      return res.status(404).json({
-        success: false,
-        message: 'Transaction not found'
-      });
-    }
+    const mappedData = {
+      code: trx.code,
+      memberid: trx.memberid,
+      customer: trx.customer,
+      telepon: trx.telepon,
+      grandtotal: trx.grandtotal,
+      cabangid: trx.cabangid,
+      status: trx.status,
+      created_by: trx.created_by,
+      updated_by: trx.updated_by,
+      createdAt: trx.createdAt,
+      updatedAt: trx.updatedAt,
+      produk: (trx.details || [])
+        .filter(d => d.produk)
+        .map(d => ({
+          product_id: d.id,
+          token: d.produk_token || d.token || null,
+          name: d.produk?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          produk_detail: d.produk
+        })),
+      unit: (trx.details || [])
+        .filter(d => d.unit)
+        .map(d => ({
+          unit_id: d.id,
+          token: d.unit_token || d.token || null,
+          name: d.unit?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          hours: d.hours || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          unit_detail: d.unit
+        })),
+      promo: (trx.details || [])
+        .filter(d => d.promo)
+        .map(d => ({
+          promo_id: d.id,
+          token: d.promo_token || d.token || null,
+          name: d.promo?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          promo_detail: d.promo
+        }))
+    };
 
-    res.json({
+    res.status(200).json({
       success: true,
-      data: transaction
+      message: 'Transaction fetched successfully',
+      data: mappedData
     });
   } catch (error) {
     console.error('Get transaction error:', error);
@@ -791,16 +855,17 @@ router.post('/', verifyToken, async (req, res) => {
 
     // === COBA ADB CONTROL SEBELUM COMMIT ===
     const getIP = await sequelize.query(`
-      SELECT b.* FROM units u 
+      SELECT b.*, c.* FROM units u 
       JOIN brandtv b ON b.id = u.brandtvid
-      WHERE u.status = 1 AND u.token = ?
+      JOIN codetv c ON c.id = b.codetvid
+      WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
     `, {
       replacements: [unit_token],
       type: sequelize.QueryTypes.SELECT,
     });
 
     console.log('Testing ADB control before commit...');
-    const adbResult = await executeAdbControl(getIP[0].ip_address, 'shell input keyevent 26');
+    const adbResult = await executeAdbControl(getIP[0].ip_address, getIP[0].command);
     console.log('ADB Control Success:', adbResult);
 
     // ADB berhasil, commit transaksi
@@ -978,16 +1043,17 @@ router.put('/offtv/:code', verifyToken, async (req, res) => {
     // }
 
     const getIP = await sequelize.query(`
-      SELECT b.* FROM units u 
+      SELECT b.*, c.* FROM units u 
       JOIN brandtv b ON b.id = u.brandtvid
-      WHERE u.status = 1 AND u.token = ?
+      JOIN codetv c ON c.id = b.codetvid
+      WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
     `, {
       replacements: [unitTokens[0]],
       type: sequelize.QueryTypes.SELECT
     });
 
     try {
-      const adbResult = await executeAdbControl(getIP[0].ip_address, 'shell input keyevent 26', res);
+      const adbResult = await executeAdbControl(getIP[0].ip_address, getIP[0].command, res);
       
       await transaction.update({
         status: 0,
