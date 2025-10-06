@@ -7,12 +7,14 @@ const { exec } = require("child_process");
 const router = express.Router();
 
 // Import model cabang, users, dan access
-let Transaksi, history_units;
+let Transaksi, history_units, TransaksiDetail, Unit;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
   Transaksi = models.transaksi;
   history_units = models.history_units;
+  TransaksiDetail = models.transaksi_detail;
+  Unit = models.units;
 
   if (!Transaksi) {
     console.error('❌ Transaksi model not found in models');
@@ -81,8 +83,107 @@ router.get('/', (req, res) => {
   });
 });
 
-// Keycode 26: POWER (bersifat toggle)
-router.post("/tv/:token/toggle_power", verifyToken, async (req, res) => {
+router.get("/time_out", verifyToken, async (req, res) => {
+    const { token } = req.params;
+
+    try {
+      const includeOptions = [
+        {
+          model: TransaksiDetail,
+          as: 'details',
+          required: false,
+          where: { status: 1 },
+          include: [
+            {
+              model: Unit,
+              as: 'unit', // pastikan alias sesuai relasi di init-models.js
+              required: false
+            },
+          ]
+        }
+      ];
+
+      const getAll = await Transaksi.findAll({
+        where: {
+            status: 1,
+        },
+        include: includeOptions
+      });
+      
+      for (const transaksi of getAll) {
+        // Langsung ambil unit_token yang tidak null
+        const unitTokens = transaksi.details
+          .filter(d => d.unit_token)
+          .map(d => d.unit_token);
+                
+        for (const token of unitTokens) {
+
+          // 1. Dapatkan Unit History
+          const checkunit = await history_units.findOne({
+              where: { token: token }
+          });
+    
+          // 2. Tentukan dan Jalankan Query
+          let getIP;
+          
+          if (!checkunit) {
+              getIP = await sequelize.query(`
+                  SELECT b.ip_address, c.command FROM units u 
+                  JOIN brandtv b ON b.id = u.brandtvid
+                  JOIN codetv c ON c.id = b.codetvid
+                  WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
+              `, {
+                  replacements: [token],
+                  type: sequelize.QueryTypes.SELECT,
+              });
+          } else {
+              getIP = await sequelize.query(`
+                  SELECT b.ip_address, c.command FROM units u 
+                  JOIN brandtv b ON b.id = u.brandtvid
+                  JOIN codetv c ON c.id = b.codetvid
+                  WHERE u.status = 1 AND c.desc = 'on/off' AND u.id = ?
+              `, {
+                  replacements: [checkunit.unitid],
+                  type: sequelize.QueryTypes.SELECT
+              });
+          }
+    
+          // 3. PENANGANAN DATA KOSONG KRITIS
+          if (!getIP || getIP.length === 0) {
+              return res.status(404).json({
+                  success: false,
+                  message: "Unit atau Perintah Power (on/off) tidak ditemukan."
+              });
+          }
+    
+          const unitData = getIP[0];
+          // console.log(unitData);
+          // 4. JALANKAN KONTROL ADB
+          // Pastikan executeAdbControl menggunakan await karena ini adalah I/O
+          const adbResult = await executeAdbControl(unitData.ip_address, unitData.command); 
+        }
+      }
+
+      // 5. RESPON KEBERHASILAN
+      return res.json({
+          success: true,
+          message: "Perintah Power TV berhasil dikirim.",
+          adb_result: adbResult
+      });
+
+    } catch (error) {
+        console.error("Error pada /tv/:token/toggle_power:", error);
+        
+        // 6. RESPON KEGAGALAN SERVER/ADB
+        return res.status(500).json({
+            success: false,
+            message: "Terjadi kesalahan internal saat memproses perintah.",
+            error: error.message
+        });
+    }
+});
+
+router.get("/tv/:token/toggle_power", verifyToken, async (req, res) => {
     const { token } = req.params;
 
     try {
@@ -150,7 +251,7 @@ router.post("/tv/:token/toggle_power", verifyToken, async (req, res) => {
 });
 
 // Keycode 24: VOLUME_UP
-router.post("/tv/:token/volume_up", verifyToken, async (req, res) => {
+router.get("/tv/:token/volume_up", verifyToken, async (req, res) => {
     const { token } = req.params;
 
     try {
@@ -216,7 +317,7 @@ router.post("/tv/:token/volume_up", verifyToken, async (req, res) => {
 });
 
 // Keycode 25: VOLUME_DOWN
-router.post("/tv/:token/volume_down", verifyToken, async (req, res) => {
+router.get("/tv/:token/volume_down", verifyToken, async (req, res) => {
     const { token } = req.params;
 
     try {
@@ -279,7 +380,7 @@ router.post("/tv/:token/volume_down", verifyToken, async (req, res) => {
 });
 
 // Keycode 164: VOLUME_MUTE
-router.post("/tv/:token/mute", verifyToken, async (req, res) => {
+router.get("/tv/:token/mute", verifyToken, async (req, res) => {
     const { token } = req.params;
 
     try {
