@@ -17,6 +17,10 @@ module.exports = function(sequelize, DataTypes) {
     desc: {
       type: DataTypes.STRING(100),
       allowNull: true
+    },
+    command: {
+      type: DataTypes.STRING(50),
+      allowNull: true
     }
   }, {
     sequelize,
