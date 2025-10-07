@@ -9,6 +9,7 @@ const initModels = require('../models/init-models');
 const { verifyToken } = require('../middleware/auth');
 const models = initModels(sequelize);
 const User = models.users;
+const Role = models.role;
 
 const router = express.Router();
 
@@ -51,6 +52,13 @@ router.post('/login', async (req, res) => {
       });
     }
 
+    const userRole = await Role.findAll({
+      where: {
+        status: 1,
+        userid: user.id
+      }
+    });
+
     const token = jwt.sign(
       { 
         userId: user.id, 
@@ -70,7 +78,8 @@ router.post('/login', async (req, res) => {
           id: user.id,
           username: user.username,
           email: user.email,
-          status: user.status
+          status: user.status,
+          roles: userRole.map(role => role.role)
         }
       }
     });
