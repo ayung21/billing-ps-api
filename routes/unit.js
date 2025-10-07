@@ -1,5 +1,6 @@
 const express = require('express');
-const { verifyToken, verifyAdmin, verifyUser } = require('../middleware/auth');
+const { verifyToken, verifyRole, verifyAdmin, verifyUser } = require('../middleware/auth');
+const { PERMISSIONS, PERMISSION_GROUPS } = require('../constants/permissions');
 const { sequelize } = require('../config/database');
 const { Op } = require('sequelize');
 
@@ -26,7 +27,7 @@ try {
 }
 
 // Get all units (protected) - UPDATE
-router.get('/', verifyToken, async (req, res) => {
+router.get('/', verifyToken, verifyRole([PERMISSIONS.VIEW_UNIT_RENTAL]), async (req, res) => {
   try {
     if (!Unit) {
       return res.status(500).json({
