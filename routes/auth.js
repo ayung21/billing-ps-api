@@ -31,15 +31,22 @@ router.post('/login', async (req, res) => {
         [Op.or]: [
           { username },
           { email: username }
-        ],
-        status: 1 // active user
+        ]
       }
     });
 
     if (!user) {
       return res.status(401).json({ 
         success: false, 
-        message: 'Invalid credentials or account is inactive' 
+        message: 'Invalid credentials' 
+      });
+    }
+
+    // ✅ CEK STATUS USER
+    if (user.status !== 1) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Account is inactive. Please contact administrator' 
       });
     }
 
@@ -49,6 +56,30 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ 
         success: false, 
         message: 'Invalid credentials' 
+      });
+    }
+
+    // ✅ CEK ACTIVE_PERIOD
+    if (user.activ_period) {
+      const activePeriod = new Date(user.activ_period);
+      const today = new Date();
+      
+      // Set jam ke 00:00:00 untuk perbandingan tanggal saja
+      today.setHours(0, 0, 0, 0);
+      activePeriod.setHours(0, 0, 0, 0);
+      
+      if (activePeriod < today) {
+        return res.status(403).json({ 
+          success: false, 
+          message: 'Account period has expired. Please renew your subscription',
+          expired_date: user.activ_period
+        });
+      }
+    } else {
+      // Jika active_period null/kosong, anggap expired
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Account has no active period. Please contact administrator'
       });
     }
 
@@ -79,6 +110,7 @@ router.post('/login', async (req, res) => {
           username: user.username,
           email: user.email,
           status: user.status,
+          activ_period: user.activ_period,
           roles: userRole.map(role => role.role)
         }
       }
