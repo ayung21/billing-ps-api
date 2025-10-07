@@ -114,8 +114,6 @@ const verifyRole = (allowedRoles) => {
         return res.status(403).json({
           success: false,
           message: 'Access denied. Insufficient permissions',
-          required: allowedRoles,
-          userRoles: userRoles
         });
       }
 
@@ -167,8 +165,6 @@ const verifyAllRoles = (requiredRoles) => {
         return res.status(403).json({
           success: false,
           message: 'Access denied. Missing required permissions',
-          required: requiredRoles,
-          userRoles: userRoles
         });
       }
 
