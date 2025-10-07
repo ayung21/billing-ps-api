@@ -1,6 +1,7 @@
 const express = require('express');
-const { verifyToken, verifyUser } = require('../middleware/auth');
+const { verifyToken, verifyRole, verifyUser } = require('../middleware/auth');
 const { sequelize } = require('../config/database');
+const { PERMISSIONS, PERMISSION_GROUPS } = require('../constants/permissions');
 const { Op } = require('sequelize');
 
 const router = express.Router();
@@ -25,7 +26,7 @@ try {
 }
 
 // Get all produk (protected)
-router.get('/', verifyToken, async (req, res) => {
+router.get('/', verifyToken, verifyRole([PERMISSIONS.VIEW_REPORT_PRODUCT]), async (req, res) => {
     try {
         const cabangaccess = [];
         if (!Produk) {
