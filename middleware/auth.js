@@ -5,6 +5,7 @@ const { sequelize } = require('../config/database');
 // Initialize models
 const models = initModels(sequelize);
 const Role = models.role; // ✅ lowercase 'role'
+const User = models.users; // ✅ lowercase 'user'
 
 // Middleware untuk verifikasi JWT token
 const verifyToken = async (req, res, next) => {
@@ -32,6 +33,53 @@ const verifyToken = async (req, res, next) => {
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+    // ✅ CEK USER STATUS DAN ACTIVE_PERIOD
+    const user = await User.findOne({
+      where: {
+        id: decoded.userId
+      }
+    });
+
+    // Validasi user ada
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Validasi status user = 1 (aktif)
+    if (user.status !== 1) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account is inactive. Please contact administrator'
+      });
+    }
+
+    // Validasi active_period masih berlaku
+    if (user.active_period) {
+      const activePeriod = new Date(user.active_period);
+      const today = new Date();
+      
+      // Set jam ke 00:00:00 untuk perbandingan tanggal saja
+      today.setHours(0, 0, 0, 0);
+      activePeriod.setHours(0, 0, 0, 0);
+      
+      if (activePeriod < today) {
+        return res.status(403).json({
+          success: false,
+          message: 'Account period has expired. Please renew your subscription',
+          expired_date: user.active_period
+        });
+      }
+    } else {
+      // Jika active_period null/kosong, anggap expired
+      return res.status(403).json({
+        success: false,
+        message: 'Account has no active period. Please contact administrator'
+      });
+    }
+
     // Ambil roles user dari database
     const userRoles = await Role.findAll({
       where: {
@@ -47,7 +95,9 @@ const verifyToken = async (req, res, next) => {
       id: decoded.userId,
       username: decoded.username,
       email: decoded.email,
-      roles: userRoles.map(r => r.role) // [1, 2, 3, 5] ← Array role IDs
+      status: user.status,
+      active_period: user.active_period,
+      roles: userRoles.map(r => r.role) // [1, 2, 3] ← Array role IDs
     };
 
     next();
