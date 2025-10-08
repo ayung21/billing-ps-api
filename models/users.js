@@ -24,7 +24,7 @@ module.exports = function(sequelize, DataTypes) {
       allowNull: true,
       comment: "0. non - active\n1. active"
     },
-    activ_period: {
+    active_period: {
       type: DataTypes.DATE,
       allowNull: true
     }
