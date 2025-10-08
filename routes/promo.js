@@ -491,7 +491,7 @@ router.post('/', verifyToken, async (req, res) => {
       // Insert new promo - RAW QUERY
       const insertResult = await sequelize.query(`
         INSERT INTO promo (token, name, unitid, cabangid, discount_percent, discount_nominal, hours, status, created_by, updated_by, createdAt, updatedAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       `, {
         replacements: [
           'PRM-' + Math.random().toString(36).substring(2, 15), // Generate random token
