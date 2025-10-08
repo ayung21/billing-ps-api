@@ -8,7 +8,7 @@ const history_units = require('../models/history_units');
 const router = express.Router();
 
 // Import models
-let Transaksi, TransaksiDetail, Member, Unit, Promo, Produk, Access, HistoryProduk;
+let Transaksi, TransaksiDetail, Member, Unit, Promo, Produk, Access, HistoryProduk, HistoryUnits;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
@@ -20,6 +20,7 @@ try {
   Produk = models.produk;
   Access = models.access;
   HistoryProduk = models.history_produk;
+  HistoryUnits = models.history_units;
 
   if (!Transaksi || !TransaksiDetail) {
     console.error('❌ Transaksi models not found');
@@ -1029,7 +1030,7 @@ router.put('/offtv/:code', verifyToken, async (req, res) => {
 
     const { memberid, customer, telepon, grandtotal, status } = req.body;
 
-    const checkunit = await history_units.findOne({
+    const checkunit = await HistoryUnits.findOne({
       where: { token: unitTokens[0] }
     });
 
