@@ -60,8 +60,8 @@ router.post('/login', async (req, res) => {
     }
 
     // ✅ CEK ACTIVE_PERIOD
-    if (user.activ_period) {
-      const activePeriod = new Date(user.activ_period);
+    if (user.active_period) {
+      const activePeriod = new Date(user.active_period);
       const today = new Date();
       
       // Set jam ke 00:00:00 untuk perbandingan tanggal saja
@@ -72,7 +72,7 @@ router.post('/login', async (req, res) => {
         return res.status(403).json({ 
           success: false, 
           message: 'Account period has expired. Please renew your subscription',
-          expired_date: user.activ_period
+          expired_date: user.active_period
         });
       }
     } else {
@@ -110,7 +110,7 @@ router.post('/login', async (req, res) => {
           username: user.username,
           email: user.email,
           status: user.status,
-          activ_period: user.activ_period,
+          active_period: user.active_period,
           roles: userRole.map(role => role.role)
         }
       }
@@ -161,7 +161,7 @@ router.post('/register', async (req, res) => {
       email,
       password: hashedPassword,
       status: 1, // active
-      activ_period: new Date()
+      active_period: new Date()
     });
 
     res.status(201).json({
@@ -212,7 +212,7 @@ router.get('/profile', async (req, res) => {
         username: user.username,
         email: user.email,
         status: user.status,
-        activ_period: user.activ_period
+        active_period: user.active_period
       }
     });
   } catch (error) {
@@ -359,7 +359,7 @@ router.get('/users', async (req, res) => {
     
     const users = await User.findAndCountAll({
       where: whereClause,
-      attributes: ['id', 'username', 'email', 'status', 'activ_period'],
+      attributes: ['id', 'username', 'email', 'status', 'active_period'],
       limit: parseInt(limit),
       offset: parseInt(offset),
       order: [['id', 'DESC']]
@@ -414,7 +414,7 @@ router.put('/users/:id/status', async (req, res) => {
 
     await user.update({ 
       status,
-      activ_period: status === 1 ? new Date() : user.activ_period
+      active_period: status === 1 ? new Date() : user.active_period
     });
 
     res.json({
