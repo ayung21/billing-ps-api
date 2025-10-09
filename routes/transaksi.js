@@ -856,6 +856,7 @@ router.post('/', verifyToken, async (req, res) => {
     // }
 
     // === COBA ADB CONTROL SEBELUM COMMIT ===
+    console.log('Unit token for ADB control:', unit_token);
     const getIP = await sequelize.query(`
       SELECT b.*, c.* FROM units u 
       JOIN brandtv b ON b.id = u.brandtvid
@@ -866,7 +867,7 @@ router.post('/', verifyToken, async (req, res) => {
       type: sequelize.QueryTypes.SELECT,
     });
 
-    console.log('Testing ADB control before commit...');
+    console.log('Testing ADB control before commit...', getIP[0].ip_address, getIP[0].command);
     const adbResult = await executeAdbControl(getIP[0].ip_address, getIP[0].command);
     console.log('ADB Control Success:', adbResult);
 
