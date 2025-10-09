@@ -1,27 +1,21 @@
 const express = require('express');
-const { verifyToken } = require('../middleware/auth');
+const { verifyToken, verifyAdmin, verifyUser } = require('../middleware/auth');
 const { sequelize } = require('../config/database');
 const { Op } = require('sequelize');
 
 const router = express.Router();
 
-// Import model member
+// Import models
 let Member;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
   Member = models.member;
-  
-  if (!Member) {
-    console.error('❌ Member model not found in models');
-  } else {
-    console.log('✅ Member model loaded successfully');
-  }
 } catch (error) {
-  console.error('❌ Error loading member model:', error.message);
+  console.error('Error loading models:', error);
 }
 
-// Get all members (protected)
+// GET all members
 router.get('/', verifyToken, async (req, res) => {
   try {
     if (!Member) {
@@ -31,30 +25,28 @@ router.get('/', verifyToken, async (req, res) => {
       });
     }
 
-    const { status, search, limit = 50, offset = 0 } = req.query;
-    
+    const { status, limit = 50, offset = 0, search } = req.query;
+
+    // Build where clause
     let whereClause = {};
     
-    // Filter berdasarkan status (1 = active sebagai default jika tidak dispesifikasi)
-    if (status !== undefined) {
-      whereClause.status = parseInt(status);
-    } else {
-      whereClause.status = { [Op.ne]: 0 }; // Tampilkan yang bukan non-active
-    }
-    
-    // Search berdasarkan name atau telpon
+    // if (status !== undefined) {
+      // whereClause.status = 1;
+    // }
+
     if (search) {
       whereClause[Op.or] = [
         { name: { [Op.like]: `%${search}%` } },
-        { telpon: { [Op.like]: `%${search}%` } }
+        { telepon: { [Op.like]: `%${search}%` } }
       ];
     }
-    
+
     const members = await Member.findAndCountAll({
       where: whereClause,
+      attributes: ['id', 'name', 'telepon', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
       limit: parseInt(limit),
       offset: parseInt(offset),
-      order: [['id', 'ASC']]
+      order: [['status', 'DESC']]
     });
 
     res.json({
@@ -74,7 +66,48 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
-// Get member by ID (protected)
+// GET member by ID
+router.get('/activemember', verifyToken, async (req, res) => {
+  try {
+    if (!Member) {
+      return res.status(500).json({
+        success: false,
+        message: 'Member model not available'
+      });
+    }
+
+    const { limit = 50, offset = 0 } = req.query;
+
+    // Build where clause
+    let whereClause = {};
+    whereClause.status = 1;
+
+    const members = await Member.findAndCountAll({
+      where: whereClause,
+      attributes: ['id', 'name', 'telepon', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      order: [['id', 'DESC']]
+    });
+
+    res.json({
+      success: true,
+      data: members.rows,
+      total: members.count,
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+  } catch (error) {
+    console.error('Get members error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// GET member by ID
 router.get('/:id', verifyToken, async (req, res) => {
   try {
     if (!Member) {
@@ -84,13 +117,17 @@ router.get('/:id', verifyToken, async (req, res) => {
       });
     }
 
-    const memberId = parseInt(req.params.id);
-    const member = await Member.findByPk(memberId);
-    
+    const { id } = req.params;
+
+    const member = await Member.findOne({
+      where: { id: parseInt(id) },
+      attributes: ['id', 'name', 'telepon', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt']
+    });
+
     if (!member) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Member not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Member not found'
       });
     }
 
@@ -99,7 +136,7 @@ router.get('/:id', verifyToken, async (req, res) => {
       data: member
     });
   } catch (error) {
-    console.error('Get member error:', error);
+    console.error('Get member by ID error:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Internal server error',
@@ -108,7 +145,7 @@ router.get('/:id', verifyToken, async (req, res) => {
   }
 });
 
-// Create new member (admin only) - SINGLE MEMBER
+// POST create new member
 router.post('/', verifyToken, async (req, res) => {
   try {
     if (!Member) {
@@ -118,56 +155,37 @@ router.post('/', verifyToken, async (req, res) => {
       });
     }
 
-    const { name, telpon, status } = req.body;
-    
-    if (!name) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Name is required' 
-      });
-    }
+    const { name, telepon, status } = req.body;
 
-    // Validate phone number format (only numbers and common phone symbols, no letters)
-    if (telpon && !/^[0-9+\-\s().#*]+$/.test(telpon)) {
+    // Validasi input
+    if (!name || !telepon) {
       return res.status(400).json({
         success: false,
-        message: 'Phone number can only contain numbers and symbols (+, -, space, parentheses, #, *)'
+        message: 'Name and telepon are required'
       });
     }
 
-    // Check if member with same name already exists
-    const existingMember = await Member.findOne({
-      where: { name }
+    // Cek apakah telepon sudah ada
+    const existingPhone = await Member.findOne({
+      where: { telepon, status: 1 }
     });
 
-    if (existingMember) {
+    if (existingPhone) {
       return res.status(409).json({
         success: false,
-        message: 'Member name already exists'
+        message: 'Phone number already exists'
       });
     }
 
-    // Check if phone number already exists (if provided)
-    if (telpon) {
-      const existingPhone = await Member.findOne({
-        where: { telpon }
-      });
-
-      if (existingPhone) {
-        return res.status(409).json({
-          success: false,
-          message: 'Phone number already exists'
-        });
-      }
-    }
-
-    const newMember = await Member.create({
+    const memberData = {
       name,
-      telpon: telpon || null,
+      telepon,
       status: status !== undefined ? parseInt(status) : 1,
       created_by: req.user?.userId || null,
       updated_by: req.user?.userId || null
-    });
+    };
+
+    const newMember = await Member.create(memberData);
 
     res.status(201).json({
       success: true,
@@ -184,7 +202,7 @@ router.post('/', verifyToken, async (req, res) => {
   }
 });
 
-// Update member (admin only)
+// PUT update member
 router.put('/:id', verifyToken, async (req, res) => {
   try {
     if (!Member) {
@@ -194,49 +212,35 @@ router.put('/:id', verifyToken, async (req, res) => {
       });
     }
 
-    const memberId = parseInt(req.params.id);
-    const member = await Member.findByPk(memberId);
-    
+    const { id } = req.params;
+    const { name, telepon, status } = req.body;
+
+    const member = await Member.findOne({
+      where: { id: parseInt(id) }
+    });
+
     if (!member) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Member not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Member not found'
       });
     }
 
-    const { name, telpon, status } = req.body;
-    
-    // Validate phone number format (only numbers and common phone symbols, no letters)
-    if (telpon && !/^[0-9+\-\s().#*]+$/.test(telpon)) {
+    // Validasi input
+    if (!name || !telepon) {
       return res.status(400).json({
         success: false,
-        message: 'Phone number can only contain numbers and symbols (+, -, space, parentheses, #, *)'
+        message: 'Name and telepon are required'
       });
     }
 
-    // Check if new name already exists (exclude current member)
-    if (name && name !== member.name) {
-      const existingMember = await Member.findOne({
-        where: { 
-          name,
-          id: { [Op.ne]: memberId }
-        }
-      });
-
-      if (existingMember) {
-        return res.status(409).json({
-          success: false,
-          message: 'Member name already exists'
-        });
-      }
-    }
-
-    // Check if new phone number already exists (exclude current member)
-    if (telpon && telpon !== member.telpon) {
+    // Cek apakah telepon sudah ada di member lain
+    if (telepon !== member.telepon) {
       const existingPhone = await Member.findOne({
         where: { 
-          telpon,
-          id: { [Op.ne]: memberId }
+          telepon, 
+          status: 1,
+          id: { [Op.ne]: parseInt(id) }
         }
       });
 
@@ -247,13 +251,15 @@ router.put('/:id', verifyToken, async (req, res) => {
         });
       }
     }
-    
-    await member.update({
-      name: name || member.name,
-      telpon: telpon !== undefined ? telpon : member.telpon,
+
+    const updateData = {
+      name,
+      telepon,
       status: status !== undefined ? parseInt(status) : member.status,
       updated_by: req.user?.userId || member.updated_by
-    });
+    };
+
+    await member.update(updateData);
 
     res.json({
       success: true,
@@ -270,7 +276,7 @@ router.put('/:id', verifyToken, async (req, res) => {
   }
 });
 
-// Delete member (admin only) - Set status to inactive (0)
+// DELETE member (soft delete - change status to 0)
 router.delete('/:id', verifyToken, async (req, res) => {
   try {
     if (!Member) {
@@ -280,32 +286,36 @@ router.delete('/:id', verifyToken, async (req, res) => {
       });
     }
 
-    const memberId = parseInt(req.params.id);
-    const member = await Member.findByPk(memberId);
-    
+    const { id } = req.params;
+
+    const member = await Member.findOne({
+      where: { id: parseInt(id) }
+    });
+
     if (!member) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Member not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Member not found'
       });
     }
 
     if (member.status === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Member is already inactive'
+        message: 'Member already deleted'
       });
     }
 
-    // Set status to non-active (0)
-    await member.update({ 
+    // Soft delete - ubah status menjadi 0
+    await member.update({
       status: 0,
-      updated_by: req.user?.userId || null
+      updated_by: req.user?.userId || member.updated_by
     });
 
     res.json({
       success: true,
-      message: 'Member deactivated successfully'
+      message: 'Member deleted successfully',
+      data: member
     });
   } catch (error) {
     console.error('Delete member error:', error);
