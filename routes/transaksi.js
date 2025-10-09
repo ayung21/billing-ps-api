@@ -1093,6 +1093,137 @@ router.put('/offtv/:code', verifyToken, async (req, res) => {
   }
 });
 
+router.put('/extendtime/:code', verifyToken, async (req, res) => {
+  try {
+    if (!Transaksi) {
+      return res.status(500).json({
+        success: false,
+        message: 'Transaksi model not available'
+      });
+    }
+
+    const { code } = req.params;
+    const transaction = await Transaksi.findOne({
+      where: { code, status: 1 },
+      include: [{
+        model: TransaksiDetail,
+        as: 'details',
+        required: false,
+        where: { status: 1 }, // hanya detail yang aktif
+        include: [
+          {
+            model: Unit,
+            as: 'unit',
+            required: false
+          },
+        ]
+      }]
+    });
+
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
+      });
+    }
+
+    const unitDetails = transaction.details.filter(detail => detail.unit_token);
+    
+    if (unitDetails.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No unit found in this transaction'
+      });
+    }
+
+    const unitDetail = unitDetails[0]; // Ambil unit detail pertama
+    const currentHours = unitDetail.hours || 0;
+    const currentHarga = unitDetail.harga || 0;
+
+    // ✅ HITUNG PRICE_PER_HOUR DARI HARGA / HOURS
+    const pricePerHour = currentHours > 0 ? Math.round(currentHarga / currentHours) : currentHarga;
+
+    const { duration } = req.body;
+
+    if (!duration || isNaN(parseInt(duration)) || parseInt(duration) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid duration is required'
+      });
+    }
+
+    // Hitung biaya tambahan
+    const additionalHours = parseInt(duration);
+    const additionalCost = additionalHours * pricePerHour;
+    
+    // Hitung total jam baru dan total harga unit baru
+    const newTotalHours = currentHours + additionalHours;
+    const newUnitTotal = newTotalHours * pricePerHour;
+    
+    // Simpan grandtotal lama
+    const oldGrandTotal = parseInt(transaction.grandtotal) || 0;
+    
+    // Update hours dan harga di detail transaksi
+    await TransaksiDetail.update({
+      hours: newTotalHours,
+      harga: newUnitTotal, // ✅ UPDATE HARGA TOTAL (price_per_hour * total_hours)
+      updated_by: req.user?.userId || null
+    }, {
+      where: {
+        code: code,
+        unit_token: unitDetail.unit_token,
+        status: 1
+      }
+    });
+
+    // Hitung ulang grandtotal dari semua detail transaksi
+    const totalResult = await sequelize.query(`
+      SELECT SUM(
+        CASE 
+          WHEN unit_token IS NOT NULL THEN harga
+          ELSE harga * qty
+        END
+      ) as total_harga 
+      FROM transaksi_detail 
+      WHERE code = ? AND status = 1
+    `, {
+      replacements: [code],
+      type: sequelize.QueryTypes.SELECT
+    });
+
+    const newGrandTotal = parseInt(totalResult[0]?.total_harga) || 0;
+
+    // Update grandtotal di transaksi utama
+    await transaction.update({
+      grandtotal: newGrandTotal.toString(),
+      updated_by: req.user?.userId || null
+    });
+
+    res.json({
+      success: true,
+      message: 'Waktu berhasil diperpanjang',
+      data: {
+        new_total: newUnitTotal,
+        new_grandtotal: newGrandTotal,
+        additional_cost: additionalCost,
+        additional_hours: additionalHours,
+        new_total_hours: newTotalHours,
+        price_per_hour: pricePerHour,
+        old_hours: currentHours,
+        old_total: currentHarga
+      }
+    });
+
+  } catch (error) {
+    console.error('Extend time error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Update transaction status (admin only)
 router.put('/:code/status', verifyToken, verifyAdmin, async (req, res) => {
   try {
