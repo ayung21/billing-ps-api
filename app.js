@@ -11,12 +11,13 @@ dotenv.config();
 const app = express();
 
 // Initialize database and sync models
+// app.js
 const initializeDatabase = async () => {
   const connected = await testConnection();
   if (connected) {
     try {
-      // Sync all models
-      await sequelize.sync({ alter: true });
+      // ✅ Gunakan force: false untuk development, atau hilangkan alter: true
+      await sequelize.sync({ force: false }); // atau sync() saja
       console.log('✅ All models synchronized successfully.');
       logInfo('Database models synchronized successfully');
     } catch (error) {
