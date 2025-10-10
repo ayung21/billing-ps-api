@@ -240,48 +240,211 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
-// Get transaction stats/overview (admin only)
-router.get('/stats/overview', verifyToken, verifyAdmin, async (req, res) => {
+// Get unit/PS statistics
+router.get('/stats/units', verifyToken, async (req, res) => {
   try {
-    if (!Transaksi) {
+    if (!Transaksi || !Unit) {
       return res.status(500).json({
         success: false,
-        message: 'Transaksi model not available'
+        message: 'Required models not available'
       });
     }
 
-    const totalTransactions = await Transaksi.count();
+    let cabangaccess = [];
 
-    const activeTransactions = await Transaksi.count({
-      where: { status: '1' } // status main
+    const _access = await Access.findAll({
+      where: {
+        userId: req.user.userId
+      }
     });
 
-    const completedTransactions = await Transaksi.count({
-      where: { status: '0' } // status selesai
+    for (const __access of _access) {
+      cabangaccess.push(__access.cabangid);
+    }
+
+    // 1. PS Ready - unit yang tidak sedang dipakai (token not in active transactions)
+    const psReadyResult = await sequelize.query(`
+      SELECT COUNT(*) as count FROM units u 
+      WHERE u.status = 1 
+      AND u.cabangid IN (:cabangaccess)
+      AND u.token NOT IN (
+        SELECT DISTINCT td.unit_token FROM transaksi t 
+        JOIN transaksi_detail td ON td.code = t.code 
+        WHERE t.status = 1 AND td.unit_token IS NOT NULL
+      )
+    `, {
+      replacements: { cabangaccess },
+      type: sequelize.QueryTypes.SELECT
     });
 
-    // Calculate total revenue from completed transactions
-    const revenueResult = await Transaksi.findAll({
-      where: { status: '0' },
-      attributes: [
-        [sequelize.fn('SUM', sequelize.cast(sequelize.col('grandtotal'), 'DECIMAL')), 'total_revenue']
-      ],
-      raw: true
+    // 2. PS Dipakai - unit yang sedang digunakan dalam transaksi aktif
+    const psDipakaiResult = await sequelize.query(`
+      SELECT COUNT(DISTINCT u.token) as count FROM units u 
+      JOIN transaksi_detail td ON td.unit_token = u.token 
+      JOIN transaksi t ON t.code = td.code 
+      AND u.cabangid IN (:cabangaccess)
+      WHERE t.status = 1 AND u.status = 1
+    `, {
+      replacements: { cabangaccess },
+      type: sequelize.QueryTypes.SELECT
     });
 
-    const totalRevenue = revenueResult[0]?.total_revenue || 0;
+    // 3. Total PS - semua unit yang aktif
+    const totalPsResult = await sequelize.query(`
+      SELECT COUNT(*) as count FROM units u 
+      WHERE u.status = 1
+    `, {
+      type: sequelize.QueryTypes.SELECT
+    });
+
+    // 4. PS yang akan selesai - unit dengan waktu habis dalam 30 menit ke depan
+    const psAkanSelesaiResult = await sequelize.query(`
+      SELECT COUNT(DISTINCT u.token) as count FROM units u 
+      JOIN transaksi_detail td ON td.unit_token = u.token 
+      JOIN transaksi t ON t.code = td.code 
+      WHERE t.status = 1 
+      AND u.status = 1
+      AND u.cabangid IN (:cabangaccess)
+      AND DATE_ADD(td.createdAt, INTERVAL td.hours HOUR) <= DATE_ADD(NOW(), INTERVAL 30 MINUTE)
+      AND DATE_ADD(td.createdAt, INTERVAL td.hours HOUR) > NOW()
+    `, {
+      type: sequelize.QueryTypes.SELECT,
+      replacements: { cabangaccess }
+    });
+
+    // 5. PS yang sudah timeout (lewat waktu tapi transaksi masih aktif)
+    const psTimeoutResult = await sequelize.query(`
+      SELECT COUNT(DISTINCT u.token) as count FROM units u 
+      JOIN transaksi_detail td ON td.unit_token = u.token 
+      JOIN transaksi t ON t.code = td.code 
+      WHERE t.status = 1 
+      AND u.cabangid IN (:cabangaccess)
+      AND u.status = 1
+      AND DATE_ADD(td.createdAt, INTERVAL td.hours HOUR) < NOW()
+    `, {
+      type: sequelize.QueryTypes.SELECT,
+      replacements: { cabangaccess }
+    });
+
+    const psReady = psReadyResult[0]?.count || 0;
+    const psDipakai = psDipakaiResult[0]?.count || 0;
+    const totalPs = totalPsResult[0]?.count || 0;
+    const psAkanSelesai = psAkanSelesaiResult[0]?.count || 0;
+    const psTimeout = psTimeoutResult[0]?.count || 0;
 
     res.json({
       success: true,
       data: {
-        total: totalTransactions,
-        active: activeTransactions,
-        completed: completedTransactions,
-        revenue: parseFloat(totalRevenue)
+        ps_ready: parseInt(psReady),           // PS yang siap digunakan
+        ps_dipakai: parseInt(psDipakai),       // PS yang sedang digunakan
+        ps_akan_selesai: parseInt(psAkanSelesai), // PS yang akan selesai dalam 30 menit
+        // ps_timeout: parseInt(psTimeout),        // PS yang sudah lewat waktu
+        total_ps: parseInt(totalPs),           // Total PS aktif
+        last_updated: new Date().toISOString()
       }
     });
   } catch (error) {
-    console.error('Get transaction stats error:', error);
+    console.error('Get unit stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Get detailed list of units by status
+router.get('/stats/units/detail', verifyToken, async (req, res) => {
+  try {
+    const { type = 'ready' } = req.query; // ready, dipakai, akan_selesai, timeout
+
+    let query = '';
+    let replacements = [];
+
+    switch (type) {
+      case 'ready':
+        query = `
+          SELECT u.id, u.token, u.name, u.status 
+          FROM units u 
+          WHERE u.status = 1 
+          AND u.token NOT IN (
+            SELECT DISTINCT td.unit_token FROM transaksi t 
+            JOIN transaksi_detail td ON td.code = t.code 
+            WHERE t.status = 1 AND td.unit_token IS NOT NULL
+          )
+          ORDER BY u.name
+        `;
+        break;
+
+      case 'dipakai':
+        query = `
+          SELECT DISTINCT u.id, u.token, u.name, u.status,
+                 t.code as transaction_code, t.customer, t.telepon,
+                 td.hours, td.createdAt as start_time,
+                 DATE_ADD(td.createdAt, INTERVAL td.hours HOUR) as end_time,
+                 TIMESTAMPDIFF(MINUTE, NOW(), DATE_ADD(td.createdAt, INTERVAL td.hours HOUR)) as remaining_minutes
+          FROM units u 
+          JOIN transaksi_detail td ON td.unit_token = u.token 
+          JOIN transaksi t ON t.code = td.code 
+          WHERE t.status = 1 AND u.status = 1
+          ORDER BY end_time ASC
+        `;
+        break;
+
+      case 'akan_selesai':
+        query = `
+          SELECT DISTINCT u.id, u.token, u.name, u.status,
+                 t.code as transaction_code, t.customer, t.telepon,
+                 td.hours, td.createdAt as start_time,
+                 DATE_ADD(td.createdAt, INTERVAL td.hours HOUR) as end_time,
+                 TIMESTAMPDIFF(MINUTE, NOW(), DATE_ADD(td.createdAt, INTERVAL td.hours HOUR)) as remaining_minutes
+          FROM units u 
+          JOIN transaksi_detail td ON td.unit_token = u.token 
+          JOIN transaksi t ON t.code = td.code 
+          WHERE t.status = 1 AND u.status = 1
+          AND DATE_ADD(td.createdAt, INTERVAL td.hours HOUR) <= DATE_ADD(NOW(), INTERVAL 30 MINUTE)
+          AND DATE_ADD(td.createdAt, INTERVAL td.hours HOUR) > NOW()
+          ORDER BY end_time ASC
+        `;
+        break;
+
+      case 'timeout':
+        query = `
+          SELECT DISTINCT u.id, u.token, u.name, u.status,
+                 t.code as transaction_code, t.customer, t.telepon,
+                 td.hours, td.createdAt as start_time,
+                 DATE_ADD(td.createdAt, INTERVAL td.hours HOUR) as end_time,
+                 TIMESTAMPDIFF(MINUTE, DATE_ADD(td.createdAt, INTERVAL td.hours HOUR), NOW()) as overtime_minutes
+          FROM units u 
+          JOIN transaksi_detail td ON td.unit_token = u.token 
+          JOIN transaksi t ON t.code = td.code 
+          WHERE t.status = 1 AND u.status = 1
+          AND DATE_ADD(td.createdAt, INTERVAL td.hours HOUR) < NOW()
+          ORDER BY end_time ASC
+        `;
+        break;
+
+      default:
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid type parameter. Use: ready, dipakai, akan_selesai, timeout'
+        });
+    }
+
+    const result = await sequelize.query(query, {
+      replacements,
+      type: sequelize.QueryTypes.SELECT
+    });
+
+    res.json({
+      success: true,
+      data: result,
+      type: type,
+      count: result.length
+    });
+
+  } catch (error) {
+    console.error('Get unit detail error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error',
