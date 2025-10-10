@@ -71,7 +71,7 @@ const executeAdbControl = (ip, adbCommand) => {
   return new Promise((resolve, reject) => {
     const fullAdbAddress = `${ip}:5555`;
     const connectCmd = `adb connect ${fullAdbAddress}`;
-
+console.log('Connecting to ADB with command:', connectCmd);
     exec(connectCmd, { timeout: 10000 }, (connectError, connectStdout, connectStderr) => {
 
       if (connectError || connectStderr.includes("unable to connect")) {
@@ -86,7 +86,7 @@ const executeAdbControl = (ip, adbCommand) => {
 
       // 2. KONEKSI BERHASIL, jalankan PERINTAH KONTROL
       const controlCmd = `adb -s ${fullAdbAddress} ${adbCommand}`;
-
+      console.log('Executing control command:', controlCmd);
       exec(controlCmd, (controlError, controlStdout, controlStderr) => {
         // Opsional: Coba putuskan koneksi setelah selesai
         exec(`adb disconnect ${fullAdbAddress}`);
