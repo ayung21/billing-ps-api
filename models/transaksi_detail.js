@@ -16,15 +16,15 @@ module.exports = function(sequelize, DataTypes) {
       allowNull: true
     },
     promo_token: {
-      type: DataTypes.TEXT,
+      type: DataTypes.STRING(255),
       allowNull: true
     },
     produk_token: {
-      type: DataTypes.TEXT,
+      type: DataTypes.STRING(255),
       allowNull: true
     },
     unit_token: {
-      type: DataTypes.TEXT,
+      type: DataTypes.STRING(255),
       allowNull: true
     },
     hours: {
