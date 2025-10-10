@@ -84,6 +84,7 @@ router.get('/', (req, res) => {
 });
 
 router.get("/time_out", async (req, res) => {
+  console.log('time out endpoint called');
   try {
     const includeOptions = [
       {
