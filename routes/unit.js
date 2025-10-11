@@ -743,7 +743,6 @@ router.post('/', verifyToken, async (req, res) => {
   }
 });
 
-// Update unit (admin only) - UPDATE
 router.put('/:id', verifyToken, async (req, res) => {
   try {
     if (!Unit) {

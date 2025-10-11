@@ -10,6 +10,7 @@ const { verifyToken } = require('../middleware/auth');
 const models = initModels(sequelize);
 const User = models.users;
 const Role = models.role;
+const Access = models.access;
 
 const router = express.Router();
 
@@ -90,6 +91,17 @@ router.post('/login', async (req, res) => {
       }
     });
 
+    let cabangaccess = [];
+    const _access = await Access.findAll({
+      where: {
+        userId: user.id
+      }
+    });
+
+    for (const __access of _access) {
+      cabangaccess.push(__access.cabangid);
+    }
+
     const token = jwt.sign(
       { 
         userId: user.id, 
@@ -109,6 +121,7 @@ router.post('/login', async (req, res) => {
           id: user.id,
           username: user.username,
           email: user.email,
+          cabang: cabangaccess,
           status: user.status,
           active_period: user.active_period,
           roles: userRole.map(role => role.role)
