@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'billing-ps-api',
+      name: 'billingps',
       script: './app.js',
       instances: 'max',
       exec_mode: 'cluster',
