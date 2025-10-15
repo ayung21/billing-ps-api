@@ -1024,7 +1024,7 @@ router.post('/', verifyToken, async (req, res) => {
       SELECT b.*, c.* FROM units u 
       JOIN brandtv b ON b.id = u.brandtvid
       JOIN codetv c ON c.id = b.codetvid
-      WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
+      WHERE u.status = 1 AND c.desc = 'on' AND u.token = ?
     `, {
       replacements: [unit_token],
       type: sequelize.QueryTypes.SELECT,
@@ -1204,7 +1204,7 @@ router.put('/offtv/:code', verifyToken, async (req, res) => {
         SELECT b.*, c.* FROM units u 
         JOIN brandtv b ON b.id = u.brandtvid
         JOIN codetv c ON c.id = b.codetvid
-        WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
+        WHERE u.status = 1 AND c.desc = 'off' AND u.token = ?
       `, {
         replacements: [unitTokens[0]],
         type: sequelize.QueryTypes.SELECT
@@ -1214,7 +1214,7 @@ router.put('/offtv/:code', verifyToken, async (req, res) => {
         SELECT b.*, c.* FROM units u 
         JOIN brandtv b ON b.id = u.brandtvid
         JOIN codetv c ON c.id = b.codetvid
-        WHERE u.status = 1 AND c.desc = 'on/off' AND u.id = ?
+        WHERE u.status = 1 AND c.desc = 'off' AND u.id = ?
       `, {
         replacements: [checkunit.unitid],
         type: sequelize.QueryTypes.SELECT
