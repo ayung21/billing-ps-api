@@ -162,7 +162,7 @@ router.get("/time_out", async (req, res) => {
             SELECT b.ip_address, c.command FROM units u 
             JOIN brandtv b ON b.id = u.brandtvid
             JOIN codetv c ON c.id = b.codetvid
-            WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
+            WHERE u.status = 1 AND c.desc = 'off' AND u.token = ?
           `, {
               replacements: [detail.unit_token],
               type: sequelize.QueryTypes.SELECT,
@@ -172,7 +172,7 @@ router.get("/time_out", async (req, res) => {
             SELECT b.ip_address, c.command FROM units u 
             JOIN brandtv b ON b.id = u.brandtvid
             JOIN codetv c ON c.id = b.codetvid
-            WHERE u.status = 1 AND c.desc = 'on/off' AND u.id = ?
+            WHERE u.status = 1 AND c.desc = 'off' AND u.id = ?
           `, {
               replacements: [checkunit.unitid],
               type: sequelize.QueryTypes.SELECT
@@ -186,7 +186,7 @@ router.get("/time_out", async (req, res) => {
               token: detail.unit_token,
               transaction_code: transaksi.code,
               success: false,
-              message: "Unit atau Perintah Power (on/off) tidak ditemukan."
+              message: "Unit atau Perintah Power (off) tidak ditemukan."
             });
             continue; // lanjut ke unit berikutnya
           }
@@ -194,6 +194,7 @@ router.get("/time_out", async (req, res) => {
           const unitData = getIP[0];
 
           // 4. JALANKAN KONTROL ADB
+          console.log(`🔌 Mengirim perintah ADB ke ${unitData.ip_address} dengan command '${unitData.command}'`);
           const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
 
           // ✅ 5. UPDATE STATUS TRANSAKSI MENJADI 0 (SELESAI)
