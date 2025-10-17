@@ -84,13 +84,13 @@ router.get('/', verifyToken, async (req, res) => {
       const replacements = [];
 
       // Status filter
-      if (status !== undefined) {
-        whereClause.push('p.status = ?');
-        replacements.push(parseInt(status));
-      } else {
-        whereClause.push('p.status != ?');
-        replacements.push(0); // Show non-inactive
-      }
+      // if (status !== undefined) {
+      //   whereClause.push('p.status = ?');
+      //   replacements.push(parseInt(status));
+      // } else {
+      //   whereClause.push('p.status != ?');
+      //   replacements.push(0); // Show non-inactive
+      // }
 
       // Unit filter
       if (unitid !== undefined) {
@@ -475,9 +475,9 @@ router.post('/', verifyToken, async (req, res) => {
 
       // Check if promo name already exists in the same cabang - RAW QUERY
       const existingPromo = await sequelize.query(`
-        SELECT id FROM promo WHERE name = ? AND cabangid = ?
+        SELECT id FROM promo WHERE name = ? AND cabangid = ? AND unitid = ? AND status = 1
       `, {
-        replacements: [name, cabangid],
+        replacements: [name, cabangid, unitid],
         type: sequelize.QueryTypes.SELECT
       });
 
