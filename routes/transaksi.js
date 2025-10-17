@@ -172,7 +172,7 @@ router.get('/', verifyToken, async (req, res) => {
       include: includeOptions,
       limit: parseInt(limit),
       offset: parseInt(offset),
-      order: [['createdAt', 'DESC']]
+      order: [['status', 'DESC']]
     });
     // Mapping hasil agar produk menjadi array detail
     const mappedData = transactions.rows.map(trx => ({
@@ -840,9 +840,27 @@ router.post('/', verifyToken, async (req, res) => {
       await dbTransaction.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Either customer name or member ID is required'
+        message: 'Either customer name is required'
       });
     }
+
+    const _unit = await sequelize.query(`
+        select * from transaksi_detail td
+        join transaksi t on t.code = td.code
+        where td.unit_token = :unit_token
+        and t.status = 1
+      `, {
+        replacements: { unit_token },
+        type: sequelize.QueryTypes.SELECT,
+      });
+
+      if (_unit.length > 0) {
+        await dbTransaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: 'Unit/PS sedang digunakan'
+        });
+      }
 
     // if (!details || !Array.isArray(details) || details.length === 0) {
     //   await dbTransaction.rollback();
