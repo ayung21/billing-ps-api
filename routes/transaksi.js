@@ -4,6 +4,7 @@ const { sequelize } = require('../config/database');
 const { Op } = require('sequelize');
 const { exec } = require("child_process");
 const history_units = require('../models/history_units');
+const { type } = require('os');
 
 const router = express.Router();
 
@@ -113,6 +114,46 @@ console.log('Connecting to ADB with command:', connectCmd);
       });
     });
   });
+};// Helper function untuk group items by token (taruh di atas router.get)
+const groupItemsByToken = (items) => {
+  return Object.values(
+    items.reduce((acc, item) => {
+      const key = item.token;
+      
+      if (!acc[key]) {
+        // Item pertama dengan token ini
+        acc[key] = { ...item };
+      } else {
+        // Item duplicate, sum values
+        acc[key].quantity += item.quantity;
+        
+        // Sum hours (untuk unit)
+        if (item.hours !== undefined) {
+          acc[key].hours = (acc[key].hours || 0) + item.hours;
+        }
+        
+        // Sum total
+        acc[key].total += item.total;
+        
+        // Update price = total
+        acc[key].price = acc[key].total;
+        
+        // Sum discount_nominal untuk promo
+        if (acc[key].promo_detail && item.promo_detail) {
+          const currentDiscount = parseFloat(acc[key].promo_detail.discount_nominal) || 0;
+          const newDiscount = parseFloat(item.promo_detail.discount_nominal) || 0;
+          acc[key].promo_detail.discount_nominal = currentDiscount + newDiscount;
+          
+          // Sum hours di promo_detail
+          if (item.promo_detail.hours !== undefined) {
+            acc[key].promo_detail.hours = (acc[key].promo_detail.hours || 0) + item.promo_detail.hours;
+          }
+        }
+      }
+      
+      return acc;
+    }, {})
+  );
 };
 
 // Get all transactions (protected)
@@ -131,7 +172,7 @@ router.get('/', verifyToken, async (req, res) => {
 
     const _access = await Access.findAll({
       where: {
-        userId: req.user.userId
+        userId: req.user.id  // ✅ Fixed: pakai req.user.id
       }
     });
 
@@ -150,17 +191,17 @@ router.get('/', verifyToken, async (req, res) => {
         include: [
           {
             model: Unit,
-            as: 'unit', // pastikan alias sesuai relasi di init-models.js
+            as: 'unit',
             required: false
           },
           {
             model: Promo,
-            as: 'promo', // pastikan alias sesuai relasi di init-models.js
+            as: 'promo',
             required: false
           },
           {
             model: Produk,
-            as: 'produk', // pastikan alias sesuai relasi di init-models.js
+            as: 'produk',
             required: false
           }
         ]
@@ -174,21 +215,12 @@ router.get('/', verifyToken, async (req, res) => {
       offset: parseInt(offset),
       order: [['status', 'DESC']]
     });
-    // Mapping hasil agar produk menjadi array detail
-    const mappedData = transactions.rows.map(trx => ({
-      code: trx.code,
-      memberid: trx.memberid,
-      customer: trx.customer,
-      telepon: trx.telepon,
-      grandtotal: trx.grandtotal,
-      cabangid: trx.cabangid,
-      status: trx.status,
-      created_by: trx.created_by,
-      updated_by: trx.updated_by,
-      createdAt: trx.createdAt,
-      updatedAt: trx.updatedAt,
-      produk: (trx.details || [])
-        .filter(d => d.produk) // hanya jika ada relasi produk
+
+    // Mapping hasil dengan grouping
+    const mappedData = transactions.rows.map(trx => {
+      // Extract produk items
+      const produkItems = (trx.details || [])
+        .filter(d => d.produk)
         .map(d => ({
           product_id: d.id,
           token: d.produk_token || d.token || null,
@@ -196,10 +228,12 @@ router.get('/', verifyToken, async (req, res) => {
           quantity: d.qty || d.quantity || 1,
           price: d.harga || d.price || 0,
           total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
-          produk_detail: d.produk // tampilkan detail produk jika ingin
-        })),
-      unit: (trx.details || [])
-        .filter(d => d.unit) // hanya jika ada relasi unit
+          produk_detail: d.produk
+        }));
+      
+      // Extract unit items
+      const unitItems = (trx.details || [])
+        .filter(d => d.unit)
         .map(d => ({
           unit_id: d.id,
           token: d.unit_token || d.token || null,
@@ -208,10 +242,12 @@ router.get('/', verifyToken, async (req, res) => {
           hours: d.hours || 1,
           price: d.harga || d.price || 0,
           total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
-          unit_detail: d.unit // tampilkan detail unit jika ingin
-        })),
-      promo: (trx.details || [])
-        .filter(d => d.promo) // hanya jika ada relasi promo
+          unit_detail: d.unit
+        }));
+      
+      // Extract promo items
+      const promoItems = (trx.details || [])
+        .filter(d => d.promo)
         .map(d => ({
           promo_id: d.id,
           token: d.promo_token || d.token || null,
@@ -219,9 +255,26 @@ router.get('/', verifyToken, async (req, res) => {
           quantity: d.qty || d.quantity || 1,
           price: d.harga || d.price || 0,
           total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
-          promo_detail: d.promo // tampilkan detail promo jika ingin
-        }))
-    }));
+          promo_detail: d.promo
+        }));
+      
+      return {
+        code: trx.code,
+        memberid: trx.memberid,
+        customer: trx.customer,
+        telepon: trx.telepon,
+        grandtotal: trx.grandtotal,
+        cabangid: trx.cabangid,
+        status: trx.status,
+        created_by: trx.created_by,
+        updated_by: trx.updated_by,
+        createdAt: trx.createdAt,
+        updatedAt: trx.updatedAt,
+        produk: groupItemsByToken(produkItems),   // ✅ Apply grouping
+        unit: groupItemsByToken(unitItems),       // ✅ Apply grouping
+        promo: groupItemsByToken(promoItems)      // ✅ Apply grouping
+      };
+    });
 
     res.json({
       success: true,
@@ -230,6 +283,7 @@ router.get('/', verifyToken, async (req, res) => {
       limit: parseInt(limit),
       offset: parseInt(offset)
     });
+
   } catch (error) {
     console.error('Get transactions error:', error);
     res.status(500).json({
@@ -511,6 +565,7 @@ router.get('/:code', verifyToken, async (req, res) => {
         .filter(d => d.produk)
         .map(d => ({
           product_id: d.id,
+          type: d.type,
           token: d.produk_token || d.token || null,
           name: d.produk?.name || d.name,
           quantity: d.qty || d.quantity || 1,
@@ -522,6 +577,7 @@ router.get('/:code', verifyToken, async (req, res) => {
         .filter(d => d.unit)
         .map(d => ({
           unit_id: d.id,
+          type: d.type,
           token: d.unit_token || d.token || null,
           name: d.unit?.name || d.name,
           quantity: d.qty || d.quantity || 1,
@@ -534,6 +590,7 @@ router.get('/:code', verifyToken, async (req, res) => {
         .filter(d => d.promo)
         .map(d => ({
           promo_id: d.id,
+          type: d.type,
           token: d.promo_token || d.token || null,
           name: d.promo?.name || d.name,
           quantity: d.qty || d.quantity || 1,
@@ -729,6 +786,7 @@ router.post('/addproduk', verifyToken, async (req, res) => {
 
       const detailData = {
         code,
+        type: 1,
         name: product.name,
         produk_token: product.produk_token ?? null,
         qty: product.quantity ? parseInt(product.quantity) : 1,
@@ -845,22 +903,26 @@ router.post('/', verifyToken, async (req, res) => {
     }
 
     const _unit = await sequelize.query(`
-        select * from transaksi_detail td
-        join transaksi t on t.code = td.code
-        where td.unit_token = :unit_token
-        and t.status = 1
-      `, {
-        replacements: { unit_token },
-        type: sequelize.QueryTypes.SELECT,
-      });
+      select * from transaksi_detail td
+      join transaksi t on t.code = td.code
+      where td.unit_token = :unit_token
+      and t.status = 1
+    `, {
+      replacements: { unit_token },
+      type: sequelize.QueryTypes.SELECT,
+    });
 
-      if (_unit.length > 0) {
-        await dbTransaction.rollback();
-        return res.status(400).json({
-          success: false,
-          message: 'Unit/PS sedang digunakan'
-        });
-      }
+    if (_unit.length > 0) {
+      await dbTransaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Unit/PS sedang digunakan'
+      });
+    }
+
+    const _promo = await Promo.findOne({
+      where: { token: promo_token, status: 1 }
+    });
 
     // if (!details || !Array.isArray(details) || details.length === 0) {
     //   await dbTransaction.rollback();
@@ -1018,7 +1080,7 @@ router.post('/', verifyToken, async (req, res) => {
 
     const productData = {
       code: transactionCode,
-      name: '',
+      name: promo_token ? _promo.name : null,
       promo_token: promo_token ?? null,
       unit_token: unit_token ?? null,
       hours: duration ? parseInt(duration) : null,
@@ -1274,7 +1336,8 @@ router.put('/offtv/:code', verifyToken, async (req, res) => {
   }
 });
 
-router.put('/extendtime/:code', verifyToken, async (req, res) => {
+router.post('/extendtime/:code', verifyToken, async (req, res) => {
+  const dbTransaction = await sequelize.transaction();
   try {
     if (!Transaksi) {
       return res.status(500).json({
@@ -1284,13 +1347,13 @@ router.put('/extendtime/:code', verifyToken, async (req, res) => {
     }
 
     const { code } = req.params;
-    const transaction = await Transaksi.findOne({
+    const _transaction = await Transaksi.findOne({
       where: { code, status: 1 },
       include: [{
         model: TransaksiDetail,
         as: 'details',
         required: false,
-        where: { status: 1 }, // hanya detail yang aktif
+        where: { status: 1 },
         include: [
           {
             model: Unit,
@@ -1301,14 +1364,14 @@ router.put('/extendtime/:code', verifyToken, async (req, res) => {
       }]
     });
 
-    if (!transaction) {
+    if (!_transaction) {
       return res.status(404).json({
         success: false,
         message: 'Transaction not found'
       });
     }
 
-    const unitDetails = transaction.details.filter(detail => detail.unit_token);
+    const unitDetails = _transaction.details.filter(detail => detail.unit_token);
     
     if (unitDetails.length === 0) {
       return res.status(400).json({
@@ -1317,14 +1380,14 @@ router.put('/extendtime/:code', verifyToken, async (req, res) => {
       });
     }
 
-    const unitDetail = unitDetails[0]; // Ambil unit detail pertama
+    const unitDetail = unitDetails[0];
     const currentHours = unitDetail.hours || 0;
     const currentHarga = unitDetail.harga || 0;
 
-    // ✅ HITUNG PRICE_PER_HOUR DARI HARGA / HOURS
     const pricePerHour = currentHours > 0 ? Math.round(currentHarga / currentHours) : currentHarga;
 
-    const { duration } = req.body;
+    let { duration, extend_type, promo_token } = req.body;
+    let transaction;
 
     if (!duration || isNaN(parseInt(duration)) || parseInt(duration) <= 0) {
       return res.status(400).json({
@@ -1333,28 +1396,91 @@ router.put('/extendtime/:code', verifyToken, async (req, res) => {
       });
     }
 
-    // Hitung biaya tambahan
-    const additionalHours = parseInt(duration);
-    const additionalCost = additionalHours * pricePerHour;
-    
-    // Hitung total jam baru dan total harga unit baru
-    const newTotalHours = currentHours + additionalHours;
-    const newUnitTotal = newTotalHours * pricePerHour;
-    
-    // Simpan grandtotal lama
-    const oldGrandTotal = parseInt(transaction.grandtotal) || 0;
-    
-    // Update hours dan harga di detail transaksi
-    await TransaksiDetail.update({
-      hours: newTotalHours,
-      harga: newUnitTotal, // ✅ UPDATE HARGA TOTAL (price_per_hour * total_hours)
-      updated_by: req.user?.userId || null
-    }, {
+    if (extend_type == 'promo') {
+      const _promo = await TransaksiDetail.findOne({
+        where: {
+          code: code,
+          promo_token: promo_token,
+          status: 1,
+          type: 0
+        }
+      });
+
+      if (!_promo) {
+        await dbTransaction.rollback();
+        return res.status(404).json({
+          success: false,
+          message: 'Promo not found in this transaction'
+        });
+      }
+
+      const productData = {
+        code: code,
+        type: 1,
+        name: null,
+        promo_token: promo_token,
+        unit_token: _promo.unit_token,
+        hours: _promo.hours,
+        harga: _promo.harga,
+        status: 1,
+        created_by: req.user?.userId || null,
+        updated_by: req.user?.userId || null
+      };
+
+      await TransaksiDetail.create(productData, { transaction: dbTransaction });
+    } else {
+      // Regular extend
+      const _reguler = await TransaksiDetail.findOne({
+        where: {
+          code: code,
+          status: 1,
+          type: 0,
+          unit_token: { [Op.ne]: null } // unit_token is not null
+        }
+      });
+
+      if (!_reguler) {
+        await dbTransaction.rollback();
+        return res.status(404).json({
+          success: false,
+          message: 'Unit transaction not found'
+        });
+      }
+
+      const additionalHours = parseInt(duration);
+      const additionalCost = additionalHours * pricePerHour;
+
+      const productData = {
+        code: code,
+        type: 1,
+        name: null,
+        promo_token: null,
+        unit_token: _reguler.unit_token,
+        hours: additionalHours,
+        harga: additionalCost,
+        status: 1,
+        created_by: req.user?.userId || null,
+        updated_by: req.user?.userId || null
+      };
+
+      await TransaksiDetail.create(productData, { transaction: dbTransaction });
+    }
+
+    // Hitung ulang total jam dan harga untuk unit tersebut
+    const totalUnitDetails = await TransaksiDetail.findAll({
       where: {
         code: code,
         unit_token: unitDetail.unit_token,
         status: 1
       }
+    });
+
+    let totalHours = 0;
+    let totalHarga = 0;
+
+    totalUnitDetails.forEach(detail => {
+      totalHours += detail.hours || 0;
+      totalHarga += detail.harga || 0;
     });
 
     // Hitung ulang grandtotal dari semua detail transaksi
@@ -1369,33 +1495,39 @@ router.put('/extendtime/:code', verifyToken, async (req, res) => {
       WHERE code = ? AND status = 1
     `, {
       replacements: [code],
-      type: sequelize.QueryTypes.SELECT
+      type: sequelize.QueryTypes.SELECT,
+      transaction: dbTransaction
     });
 
     const newGrandTotal = parseInt(totalResult[0]?.total_harga) || 0;
 
     // Update grandtotal di transaksi utama
-    await transaction.update({
+    await _transaction.update({
       grandtotal: newGrandTotal.toString(),
       updated_by: req.user?.userId || null
-    });
+    }, { transaction: dbTransaction });
+
+    await dbTransaction.commit();
 
     res.json({
       success: true,
       message: 'Waktu berhasil diperpanjang',
       data: {
-        new_total: newUnitTotal,
         new_grandtotal: newGrandTotal,
-        additional_cost: additionalCost,
-        additional_hours: additionalHours,
-        new_total_hours: newTotalHours,
-        price_per_hour: pricePerHour,
-        old_hours: currentHours,
-        old_total: currentHarga
+        total_hours: totalHours,
+        total_harga: totalHarga,
+        extend_type: extend_type,
+        duration_added: parseInt(duration)
       }
     });
 
   } catch (error) {
+    try {
+      await dbTransaction.rollback();
+    } catch (rollbackError) {
+      console.error('Rollback error:', rollbackError);
+    }
+    
     console.error('Extend time error:', error);
     res.status(500).json({
       success: false,
