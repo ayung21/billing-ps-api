@@ -35,6 +35,10 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.INTEGER,
       allowNull: true
     },
+    desc: {
+      type: DataTypes.STRING(15),
+      allowNull: true
+    },
     created_by: {
       type: DataTypes.INTEGER,
       allowNull: true
