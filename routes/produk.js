@@ -160,6 +160,55 @@ router.get('/allactive/:id', verifyToken, async (req, res) => {
     }
 });
 
+router.get('/cabang/:id', verifyToken, async (req, res) => {
+    const cabangId = parseInt(req.params.id);
+    try {
+        let cabangaccess = [];
+        if(cabangId == 0){
+            const _access = await Access.findAll({
+                where: {
+                    userId: req.user.userId
+                }
+            });
+            
+            for (const __access of _access) {
+                cabangaccess.push(__access.cabangid);
+            }
+        }else{
+            cabangaccess.push(cabangId);
+        }
+
+        const produk = await sequelize.query(`
+            SELECT p.id, hp.token, hp.type, IF(hp.type = 1, 'Makanan', 'Minuman') AS category, hp.name, p.stok, hp.harga_beli, hp.harga_jual, hp.cabangid, hp.status, hp.desc
+            FROM history_produk hp
+            JOIN (
+            SELECT produkid, MAX(createdAt) AS max_created
+            FROM history_produk
+            GROUP BY produkid
+            ) h2 ON hp.produkid = h2.produkid AND hp.createdAt = h2.max_created
+            join produk p on p.id = hp.produkid
+            WHERE hp.cabangid IN (:cabangaccess)`,
+            {
+                replacements: { cabangaccess },
+                type: sequelize.QueryTypes.SELECT
+            }
+        );
+
+        res.json({
+            success: true,
+            data: produk
+        });
+
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+
+})
+
 // Get produk by ID (protected)
 router.get('/:id', verifyToken, async (req, res) => {
     try {
@@ -261,8 +310,10 @@ router.post('/', verifyToken, async (req, res) => {
             }
         }
 
+        const token = 'PRD-' + Math.random().toString(36).substring(2, 15); // Generate random token
+
         const newProduk = await Produk.create({
-            token: 'PRD-' + Math.random().toString(36).substring(2, 15), // Generate random token
+            token: token,
             type: parseInt(type),
             name,
             stok: parseInt(stok),
@@ -272,6 +323,20 @@ router.post('/', verifyToken, async (req, res) => {
             harga_jual: parseInt(harga_jual),
             created_by: req.user?.userId || null,
             updated_by: req.user?.userId || null
+        });
+
+        const historyProduk = await HistoryProduk.create({
+            token: token,
+            produkid: newProduk.id,
+            type: parseInt(type),
+            name,
+            stok: parseInt(stok),
+            cabangid: cabang ? parseInt(cabang) : null,
+            status: status !== undefined ? parseInt(status) : 1,
+            desc: 'Created',
+            harga_beli: parseInt(harga_beli),
+            harga_jual: parseInt(harga_jual),
+            created_by: req.user?.userId || null,
         });
 
         res.status(201).json({
@@ -368,21 +433,25 @@ router.put('/:id', verifyToken, async (req, res) => {
                 });
             }
         }
+
+        const _token ='PRD-' + Math.random().toString(36).substring(2, 15); // Generate random token
         
         await HistoryProduk.create({
-            token: produk.token,
+            token: _token,
             produkid: produk.id,
             type: type !== undefined ? parseInt(type) : produk.type,
             name: name || produk.name,
             stok: stok !== undefined ? parseInt(stok) : produk.stok,
+            cabangid: cabang !== undefined ? (cabang ? parseInt(cabang) : null) : produk.cabang,
+            status: status !== undefined ? parseInt(status) : produk.status,
+            desc: 'Updated',
             harga_beli: harga_beli !== undefined ? parseInt(harga_beli) : produk.harga_beli,
             harga_jual: harga_jual !== undefined ? parseInt(harga_jual) : produk.harga_jual,
-            status: status !== undefined ? parseInt(status) : produk.status,
             created_by: req.user?.userId || null
         });
         
         await produk.update({
-            token: 'PRD-' + Math.random().toString(36).substring(2, 15), // Generate random token
+            token: _token,
             type: type !== undefined ? parseInt(type) : produk.type,
             name: name || produk.name,
             stok: stok !== undefined ? parseInt(stok) : produk.stok,
@@ -439,6 +508,21 @@ router.delete('/:id', verifyToken, async (req, res) => {
         await produk.update({
             status: 0,
             updated_by: req.user?.userId || null
+        });
+
+
+        await HistoryProduk.create({
+            token: _token,
+            produkid: produk.id,
+            type: produk.type,
+            name: produk.name,
+            stok: produk.stok,
+            cabangid: produk.cabang,
+            status: 0,
+            desc: 'Deleted',
+            harga_beli: produk.harga_beli,
+            harga_jual: produk.harga_jual,
+            created_by: req.user?.userId || null
         });
 
         res.json({
