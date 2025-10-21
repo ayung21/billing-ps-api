@@ -347,7 +347,9 @@ router.get('/stats/units', verifyToken, async (req, res) => {
     const totalPsResult = await sequelize.query(`
       SELECT COUNT(*) as count FROM units u 
       WHERE u.status = 1
+      AND u.cabangid IN (:cabangaccess)
     `, {
+      replacements: { cabangaccess },
       type: sequelize.QueryTypes.SELECT
     });
 
