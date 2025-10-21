@@ -43,6 +43,10 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.INTEGER,
       allowNull: true
     },
+    total: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
     status: {
       type: DataTypes.INTEGER,
       allowNull: true,
