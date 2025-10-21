@@ -209,6 +209,117 @@ router.get('/cabang/:id', verifyToken, async (req, res) => {
 
 })
 
+router.post('/report', verifyToken, async (req, res) => {
+    try {
+        const { start_date, end_date, cabang_id, category } = req.body;
+
+        // Validasi required fields
+        if (!start_date || !end_date) {
+            return res.status(400).json({
+                success: false,
+                message: 'start_date and end_date are required'
+            });
+        }
+
+        // Build dynamic WHERE conditions
+        let whereConditions = [
+            'td.status = 1',
+            'td.unit_token IS NULL',
+            'td.name IS NOT NULL',
+            "td.name != ''",
+            'DATE(td.createdAt) BETWEEN ? AND ?'
+        ];
+
+        let replacements = [start_date, end_date];
+
+        // Add cabang filter only if cabang_id is provided and not null
+        if (cabang_id !== null && cabang_id !== undefined && cabang_id !== '') {
+            whereConditions.push('t.cabangid = ?');
+            replacements.push(cabang_id);
+        }
+
+        // Add category filter only if category is provided and not null
+        if (category !== null && category !== undefined && category !== '') {
+            whereConditions.push('hp.type = ?');
+            replacements.push(category);
+        }
+
+        const whereClause = whereConditions.join(' AND ');
+
+        const results = await sequelize.query(`
+            SELECT 
+                td.name as productName,
+                IF(hp.type = 1, 'Makanan', 'Minuman') as category,
+                hp.type,
+                td.harga as pricePerUnit,
+                DATE(td.createdAt) as date,
+                SUM(td.qty) as quantity,
+                SUM(td.total) as revenue
+            FROM transaksi_detail td
+            JOIN history_produk hp ON hp.token = td.produk_token 
+            JOIN transaksi t ON t.code = td.code
+            WHERE ${whereClause}
+            GROUP BY td.name, td.harga, hp.type, DATE(td.createdAt)
+            ORDER BY td.name, td.harga, DATE(td.createdAt)
+        `, {
+            replacements,
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        // Transform data ke format yang diinginkan
+        const productMap = new Map();
+
+        results.forEach(row => {
+            // Key unik untuk setiap kombinasi produk dan harga
+            const key = `${row.productName}_${row.pricePerUnit}`;
+            
+            if (!productMap.has(key)) {
+                productMap.set(key, {
+                    productName: row.productName,
+                    category: row.category,
+                    type: row.type,
+                    totalSold: 0,
+                    pricePerUnit: parseInt(row.pricePerUnit),
+                    totalRevenue: 0,
+                    salesData: []
+                });
+            }
+
+            const product = productMap.get(key);
+            product.totalSold += parseInt(row.quantity);
+            product.totalRevenue += parseInt(row.revenue);
+            product.salesData.push({
+                date: row.date,
+                quantity: parseInt(row.quantity),
+                revenue: parseInt(row.revenue)
+            });
+        });
+
+        // Convert Map to Array
+        const reportData = Array.from(productMap.values());
+
+        res.json({
+            success: true,
+            data: reportData,
+            filters: {
+                start_date,
+                end_date,
+                cabang_id: cabang_id || 'all',
+                category: category || 'all'
+            },
+            total_records: reportData.length
+        });
+
+    } catch (error) {
+        console.error('Error generating sales report:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error generating sales report',
+            error: error.message
+        });
+    }
+});
+
 // Get produk by ID (protected)
 router.get('/:id', verifyToken, async (req, res) => {
     try {
