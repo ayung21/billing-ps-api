@@ -716,8 +716,10 @@ router.post('/', verifyToken, async (req, res) => {
       }
     }
 
+    const _token =  'UNT-' + Math.random().toString(36).substring(2, 15); // Generate random token
+
     const newUnit = await Unit.create({
-      token: 'UNT-' + Math.random().toString(36).substring(2, 15), // Generate random token
+      token: _token,
       name,
       description: description || null,
       cabangid: cabang ? parseInt(cabang) : null,
@@ -726,6 +728,19 @@ router.post('/', verifyToken, async (req, res) => {
       price: price !== undefined ? parseFloat(price) : null,
       created_by: req.user?.userId || null,
       updated_by: req.user?.userId || null
+    });
+
+    await HistoryUnits.create({
+      token: _token,
+      unitid: newUnit.id,
+      name,
+      description: description,
+      brandtvid: brandtvid ? parseInt(brandtvid) : null,
+      cabangid: cabang ? parseInt(cabang) : null,
+      price: price !== undefined ? parseFloat(price) : null,
+      status: 1,
+      desc: 'Created',
+      created_by: req.user?.userId || null
     });
 
     res.status(201).json({
@@ -854,23 +869,24 @@ router.put('/:id', verifyToken, async (req, res) => {
       }
     }
 
+    const _token = 'UNT-' + Math.random().toString(36).substring(2, 15); // Generate random token
+
     // Create history record with description
-    if (HistoryUnits) {
-      await HistoryUnits.create({
-        token: unit.token,
-        unitid: unit.id,
-        name: unit.name,
-        description: unit.description,
-        brandtvid: unit.brandtvid,
-        cabangid: unit.cabangid,
-        price: unit.price,
-        status: unit.status,
-        created_by: req.user?.userId || null
-      });
-    }
+    await HistoryUnits.create({
+      token: _token,
+      unitid: unit.id,
+      name: name || unit.name,
+      description: description !== undefined ? description : unit.description,
+      brandtvid: parsedBrandtvId,
+      cabangid: parsedCabangId,
+      price: price !== undefined ? parseFloat(price) : unit.price,
+      status: parsedStatus,
+      desc: 'Updated',
+      created_by: req.user?.userId || null
+    });
     
     await unit.update({
-      token: 'UNT-' + Math.random().toString(36).substring(2, 15), // Generate random token
+      token: _token,
       name: name || unit.name,
       description: description !== undefined ? description : unit.description,
       cabangid: parsedCabangId,
@@ -938,7 +954,6 @@ router.delete('/:id', verifyToken, async (req, res) => {
     });
 
     // Create history record with description
-    if (HistoryUnits) {
       await HistoryUnits.create({
         unitid: unit.id,
         name: unit.name,
@@ -946,10 +961,10 @@ router.delete('/:id', verifyToken, async (req, res) => {
         brandtvid: unit.brandtvid,
         cabangid: unit.cabangid,
         price: unit.price,
-        status: unit.status,
+        status: 0,
+        desc: 'Deleted',
         created_by: req.user?.userId || null
       });
-    }
 
     res.json({
       success: true,
