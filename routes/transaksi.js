@@ -734,6 +734,131 @@ router.delete('/deleteproduk/:id', verifyToken, async (req, res) => {
   }
 });
 
+router.post('/report', verifyToken, async (req, res) => {
+  try {
+        const { startDate, endDate, cabangId, consoleId, operationalHours = 16 } = req.query;
+        
+        let whereConditions = `
+            td.status = 1
+            AND td.unit_token IS NOT NULL
+            AND td.produk_token IS NULL
+        `;
+
+        const replacements = {};
+
+        if (startDate && endDate) {
+            whereConditions += ` AND DATE(td.createdAt) BETWEEN :startDate AND :endDate`;
+            replacements.startDate = startDate;
+            replacements.endDate = endDate;
+        }
+
+        if (consoleId) {
+            whereConditions += ` AND td.unit_token = :consoleId`;
+            replacements.consoleId = consoleId;
+        }
+
+        if (cabangId) {
+            whereConditions += ` AND t.cabangid = :cabangId`;
+            replacements.cabangId = cabangId;
+        }
+
+        const results = await sequelize.query(`
+            SELECT 
+                hu.name as consoleName,
+                hu.unitid as consoleId,
+                t.cabangid as cabangId,
+                td.unit_token as unit_token,
+                td.harga as pricePerHour,
+                DATE(td.createdAt) as date,
+                SUM(td.hours) as hours,
+                COUNT(td.id) as transactions,
+                SUM(td.total) as revenue
+            FROM transaksi_detail td
+            JOIN history_units hu ON hu.token = td.unit_token
+            JOIN transaksi t ON t.code = td.code
+            WHERE ${whereConditions}
+            GROUP BY td.unit_token, td.harga, hu.name, hu.unitid, t.cabangid, DATE(td.createdAt)
+            ORDER BY hu.name, td.harga, DATE(td.createdAt)
+        `, {
+            replacements,
+            type: sequelize.QueryTypes.SELECT
+        });
+
+        // Transform data
+        const consoleMap = new Map();
+
+        results.forEach(row => {
+            const key = `${row.unit_token}_${row.pricePerHour}`;
+            
+            if (!consoleMap.has(key)) {
+                consoleMap.set(key, {
+                    consoleName: row.consoleName,
+                    consoleId: row.consoleId,
+                    cabangId: row.cabangId,
+                    totalHours: 0,
+                    totalTransactions: 0,
+                    totalRevenue: 0,
+                    averageHours: 0,
+                    pricePerHour: parseInt(row.pricePerHour),
+                    utilization: 0,
+                    rentalData: []
+                });
+            }
+
+            const console = consoleMap.get(key);
+            const hours = parseInt(row.hours) || 0;
+            const transactions = parseInt(row.transactions) || 0;
+            const revenue = parseInt(row.revenue) || 0;
+
+            console.totalHours += hours;
+            console.totalTransactions += transactions;
+            console.totalRevenue += revenue;
+            
+            console.rentalData.push({
+                date: row.date,
+                hours: hours,
+                transactions: transactions,
+                revenue: revenue
+            });
+        });
+
+        // Calculate metrics
+        const maxHoursPerDay = parseInt(operationalHours);
+        const reportData = Array.from(consoleMap.values()).map(console => {
+            // Average hours per transaction
+            console.averageHours = console.totalTransactions > 0 
+                ? parseFloat((console.totalHours / console.totalTransactions).toFixed(2))
+                : 0;
+
+            // Utilization based on operational hours
+            const totalDays = console.rentalData.length;
+            const maxPossibleHours = totalDays * maxHoursPerDay;
+            console.utilization = maxPossibleHours > 0
+                ? Math.round((console.totalHours / maxPossibleHours) * 100)
+                : 0;
+
+            return console;
+        });
+
+        res.json({
+            success: true,
+            data: reportData,
+            meta: {
+                operationalHoursPerDay: maxHoursPerDay,
+                totalConsoles: reportData.length
+            }
+        });
+
+    } catch (error) {
+        console.error('Error generating console rental report:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error generating console rental report',
+            error: error.message
+        });
+    }
+})
+
 router.post('/addproduk', verifyToken, async (req, res) => {
   const dbTransaction = await sequelize.transaction();
   try {
