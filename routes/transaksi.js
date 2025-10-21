@@ -791,6 +791,7 @@ router.post('/addproduk', verifyToken, async (req, res) => {
         produk_token: product.produk_token ?? null,
         qty: product.quantity ? parseInt(product.quantity) : 1,
         harga: product.price ? parseInt(product.price) : 0,
+        total: parseInt(product.price) * parseInt(product.quantity),
         status: 1,
         created_by: req.user?.userId || null,
         updated_by: req.user?.userId || null
@@ -1067,6 +1068,7 @@ router.post('/', verifyToken, async (req, res) => {
         produk_token: product.product_token ?? null,
         qty: product.quantity ? parseInt(product.quantity) : null,
         harga: product.price ? parseInt(product.price) : 0,
+        total: parseInt(product.price) * parseInt(product.quantity),
         status: 1,
         created_by: req.user?.userId || null,
         updated_by: req.user?.userId || null
@@ -1085,6 +1087,7 @@ router.post('/', verifyToken, async (req, res) => {
       unit_token: unit_token ?? null,
       hours: duration ? parseInt(duration) : null,
       harga: rental_price ? parseInt(rental_price) : 0,
+      total: rental_price ? parseInt(rental_price) : 0,
       status: 1,
       created_by: req.user?.userId || null,
       updated_by: req.user?.userId || null
@@ -1422,6 +1425,7 @@ router.post('/extendtime/:code', verifyToken, async (req, res) => {
         unit_token: _promo.unit_token,
         hours: _promo.hours,
         harga: _promo.harga,
+        total: _promo.harga,
         status: 1,
         created_by: req.user?.userId || null,
         updated_by: req.user?.userId || null
@@ -1458,6 +1462,7 @@ router.post('/extendtime/:code', verifyToken, async (req, res) => {
         unit_token: _reguler.unit_token,
         hours: additionalHours,
         harga: additionalCost,
+        total: additionalCost,
         status: 1,
         created_by: req.user?.userId || null,
         updated_by: req.user?.userId || null
