@@ -2,11 +2,12 @@ const express = require('express');
 const { verifyToken, verifyUser } = require('../middleware/auth');
 const { sequelize } = require('../config/database');
 const { Op } = require('sequelize');
+const history_promo = require('../models/history_promo');
 
 const router = express.Router();
 
 // Import model promo
-let Promo, Unit, Access, Cabang;
+let Promo, Unit, Access, Cabang, HistoryProduk;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
@@ -14,7 +15,8 @@ try {
   Unit = models.units;
   Access = models.access;
   Cabang = models.cabang;
-  
+  HistoryProduk = models.history_produk;
+
   if (!Promo) {
     console.error('❌ Promo model not found in models');
   } else {
@@ -488,13 +490,15 @@ router.post('/', verifyToken, async (req, res) => {
         });
       }
 
+      const _token = 'PRM-' + Math.random().toString(36).substring(2, 15); // Generate random token
+
       // Insert new promo - RAW QUERY
       const insertResult = await sequelize.query(`
         INSERT INTO promo (token, name, unitid, cabangid, discount_percent, discount_nominal, hours, status, created_by, updated_by, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       `, {
         replacements: [
-          'PRM-' + Math.random().toString(36).substring(2, 15), // Generate random token
+          _token,
           name,
           parseInt(unitid),
           cabangid,
@@ -509,6 +513,20 @@ router.post('/', verifyToken, async (req, res) => {
       });
 
       const newPromoId = insertResult[0];
+
+      const insertHistory = await HistoryProduk.create({
+        token: _token,
+        promoId: newPromoId,
+        name: name,
+        unitid: parseInt(unitid),
+        cabangid: cabangid,
+        discount_percent: discount_percent ? parseInt(discount_percent) : null,
+        discount_nominal: discount_nominal ? parseInt(discount_nominal) : null,
+        hours: parseInt(hours),
+        status: status !== undefined ? parseInt(status) : 1,
+        desc: 'Created',
+        createdBy: req.user?.userId || null,
+      });
 
       // Get the created promo with JOIN
       const newPromo = await sequelize.query(`
@@ -636,15 +654,16 @@ router.put('/:id', verifyToken, async (req, res) => {
           });
         }
       }
+      const _token = 'PRM-' + Math.random().toString(36).substring(2, 15); // Generate new random token
 
       // INSERT history_promo setelah update
       await sequelize.query(`
         INSERT INTO history_promo 
-        (token, promoid, name, unitid, cabangid, discount_percent, discount_nominal, hours, created_by, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        (token, promoid, name, unitid, cabangid, discount_percent, discount_nominal, hours, status, desc, created_by, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
       `, {
         replacements: [
-          promo.token,
+          _token,
           promoId,
           name || promo.name,
           unitid !== undefined ? (unitid ? parseInt(unitid) : null) : promo.unitid,
@@ -652,6 +671,8 @@ router.put('/:id', verifyToken, async (req, res) => {
           discount_percent !== undefined ? (discount_percent ? parseInt(discount_percent) : null) : promo.discount_percent,
           discount_nominal !== undefined ? (discount_nominal ? parseInt(discount_nominal) : null) : promo.discount_nominal,
           hours !== undefined ? (hours ? parseInt(hours) : null) : promo.hours,
+          status !== undefined ? parseInt(status) : promo.status,
+          'Updated',
           req.user?.userId || null
         ],
         type: sequelize.QueryTypes.INSERT
@@ -672,7 +693,7 @@ router.put('/:id', verifyToken, async (req, res) => {
         WHERE id = ?
       `, {
         replacements: [
-          'PRM-' + Math.random().toString(36).substring(2, 15), // Generate new random token
+          _token,
           name || promo.name,
           unitid !== undefined ? (unitid ? parseInt(unitid) : null) : promo.unitid,
           discount_percent !== undefined ? (discount_percent ? parseInt(discount_percent) : null) : promo.discount_percent,
@@ -773,6 +794,20 @@ router.delete('/:id', verifyToken, async (req, res) => {
       `, {
         replacements: [req.user?.userId || null, promoId],
         type: sequelize.QueryTypes.UPDATE
+      });
+      
+      await HistoryProduk.create({
+        token: existingPromo[0].token,
+        promoId: existingPromo[0].id,
+        name: existingPromo[0].name,
+        unitid: existingPromo[0].unitid,
+        cabangid: existingPromo[0].cabangid,
+        discount_percent: existingPromo[0].discount_percent,
+        discount_nominal: existingPromo[0].discount_nominal,
+        hours: existingPromo[0].hours,
+        status: 0,
+        desc: 'Deleted',
+        createdBy: req.user?.userId || null,
       });
 
       res.json({
