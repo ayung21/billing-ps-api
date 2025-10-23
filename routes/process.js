@@ -109,49 +109,68 @@ router.get("/time_out", async (req, res) => {
       include: includeOptions
     });
 
-    // ✅ Kumpulkan semua hasil ADB dalam array
     const adbResults = [];
     let totalProcessed = 0;
     let totalSuccess = 0;
     let totalFailed = 0;
 
     for (const transaksi of getAll) {
-      // Langsung ambil unit_token yang tidak null
-      //   const unitTokens = transaksi.details
-      //     .filter(d => d.unit_token)
-      //     .map(d => d.unit_token);
+      // Group details by unit_token untuk menghitung total hours
+      const unitGroups = {};
+      
+      transaksi.details
+        .filter(d => d.unit_token)
+        .forEach(detail => {
+          if (!unitGroups[detail.unit_token]) {
+            unitGroups[detail.unit_token] = {
+              initialDetail: null,
+              totalHours: 0,
+              allDetails: []
+            };
+          }
+          
+          unitGroups[detail.unit_token].allDetails.push(detail);
+          unitGroups[detail.unit_token].totalHours += detail.hours || 0;
+          
+          // Simpan detail type 0 sebagai initial detail untuk referensi waktu mulai
+          if (detail.type === 0) {
+            unitGroups[detail.unit_token].initialDetail = detail;
+          }
+        });
 
-      const detailunit = transaksi.details
-        .filter(d => d.unit_token);
+      // Process each unit group
+      for (const [unitToken, group] of Object.entries(unitGroups)) {
+        if (!group.initialDetail) {
+          console.log(`⚠️ Unit ${unitToken} tidak memiliki transaksi awal (type 0), skip...`);
+          continue;
+        }
 
-      for (const detail of detailunit) {
-        // ✅ CEK APAKAH WAKTU TRANSAKSI SUDAH MELEBIHI JAM YANG DIBAYAR
-        const createdAt = new Date(detail.createdAt);
-        const hoursToAdd = detail.hours || 0;
-        const endTime = new Date(createdAt.getTime() + (hoursToAdd * 60 * 60 * 1000)); // Tambah jam
+        // Hitung timeout berdasarkan waktu transaksi awal + total hours
+        const createdAt = new Date(group.initialDetail.createdAt);
+        const totalHours = group.totalHours;
+        const endTime = new Date(createdAt.getTime() + (totalHours * 60 * 60 * 1000));
         const now = new Date();
 
-        console.log(`Detail ID: ${detail.id}`);
-        console.log(`Created At: ${createdAt}`);
-        console.log(`Hours: ${hoursToAdd}`);
+        console.log(`Unit Token: ${unitToken}`);
+        console.log(`Transaction Start: ${createdAt}`);
+        console.log(`Total Hours (type 0 + type 1): ${totalHours}`);
         console.log(`End Time: ${endTime}`);
         console.log(`Now: ${now}`);
         console.log(`Is Expired: ${now >= endTime}`);
 
-        // Jika belum waktunya timeout, skip detail ini
+        // Jika belum waktunya timeout, skip unit ini
         if (now < endTime) {
-          console.log(`⏳ Unit ${detail.unit_token} belum timeout, skip...`);
-          continue; // Lewati ke detail berikutnya
+          console.log(`⏳ Unit ${unitToken} belum timeout, skip...`);
+          continue;
         }
 
-        console.log(`⏰ Unit ${detail.unit_token} sudah timeout, akan dimatikan...`);
-
+        console.log(`⏰ Unit ${unitToken} sudah timeout, akan dimatikan...`);
         totalProcessed++;
 
         try {
           // 1. Dapatkan Unit History
           const checkunit = await history_units.findOne({
-            where: { token: detail.unit_token }
+            where: { token: unitToken }
           });
 
           // 2. Tentukan dan Jalankan Query
@@ -159,21 +178,21 @@ router.get("/time_out", async (req, res) => {
 
           if (!checkunit) {
             getIP = await sequelize.query(`
-            SELECT b.ip_address, c.command FROM units u 
-            JOIN brandtv b ON b.id = u.brandtvid
-            JOIN codetv c ON c.id = b.codetvid
-            WHERE u.status = 1 AND c.desc = 'off' AND u.token = ?
-          `, {
-              replacements: [detail.unit_token],
+              SELECT b.ip_address, c.command FROM units u 
+              JOIN brandtv b ON b.id = u.brandtvid
+              JOIN codetv c ON c.id = b.codetvid
+              WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
+            `, {
+              replacements: [unitToken],
               type: sequelize.QueryTypes.SELECT,
             });
           } else {
             getIP = await sequelize.query(`
-            SELECT b.ip_address, c.command FROM units u 
-            JOIN brandtv b ON b.id = u.brandtvid
-            JOIN codetv c ON c.id = b.codetvid
-            WHERE u.status = 1 AND c.desc = 'off' AND u.id = ?
-          `, {
+              SELECT b.ip_address, c.command FROM units u 
+              JOIN brandtv b ON b.id = u.brandtvid
+              JOIN codetv c ON c.id = b.codetvid
+              WHERE u.status = 1 AND c.desc = 'on/off' AND u.id = ?
+            `, {
               replacements: [checkunit.unitid],
               type: sequelize.QueryTypes.SELECT
             });
@@ -183,12 +202,12 @@ router.get("/time_out", async (req, res) => {
           if (!getIP || getIP.length === 0) {
             totalFailed++;
             adbResults.push({
-              token: detail.unit_token,
+              token: unitToken,
               transaction_code: transaksi.code,
               success: false,
               message: "Unit atau Perintah Power (off) tidak ditemukan."
             });
-            continue; // lanjut ke unit berikutnya
+            continue;
           }
 
           const unitData = getIP[0];
@@ -197,32 +216,36 @@ router.get("/time_out", async (req, res) => {
           console.log(`🔌 Mengirim perintah ADB ke ${unitData.ip_address} dengan command '${unitData.command}'`);
           const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
 
-          // ✅ 5. UPDATE STATUS TRANSAKSI MENJADI 0 (SELESAI)
+          // 5. UPDATE STATUS TRANSAKSI MENJADI 0 (SELESAI)
           await transaksi.update({
             status: 0,
-          },
-            { where: { code: transaksi.code } }
-          );
+          });
 
           console.log(`✅ Transaksi ${transaksi.code} berhasil diupdate status = 0`);
-
           totalSuccess++;
 
           adbResults.push({
-            token: detail.unit_token,
+            token: unitToken,
             transaction_code: transaksi.code,
             ip_address: unitData.ip_address,
+            start_time: createdAt,
+            total_hours: totalHours,
             end_time: endTime,
             transaction_updated: true,
+            details_processed: group.allDetails.map(d => ({
+              id: d.id,
+              type: d.type,
+              hours: d.hours,
+              created_at: d.createdAt
+            })),
             ...adbResult
           });
 
         } catch (error) {
-          // Tangani error per unit (misal ADB gagal)
           totalFailed++;
-          console.error(`Error processing unit ${detail.unit_token}:`, error.message);
+          console.error(`Error processing unit ${unitToken}:`, error.message);
           adbResults.push({
-            token: detail.unit_token,
+            token: unitToken,
             transaction_code: transaksi.code,
             success: false,
             message: error.message || "ADB command failed",
@@ -246,11 +269,76 @@ router.get("/time_out", async (req, res) => {
 
   } catch (error) {
     console.error("Error pada /time_out:", error);
-
-    // 6. RESPON KEGAGALAN SERVER
     return res.status(500).json({
       success: false,
       message: "Terjadi kesalahan internal saat memproses perintah.",
+      error: error.message
+    });
+  }
+});
+
+router.get("/sleep", async (req, res) => {
+  console.log('loop mode sleep');
+  try {
+    const adbResults = [];
+    let totalProcessed = 0;
+    let totalSuccess = 0;
+    let totalFailed = 0;
+
+    const getAll = await sequelize.query(`
+          select b.ip_address, c.command  from units u 
+          join brandtv b on b.id = u.brandtvid 
+          join codetv c on c.id = b.codetvid 
+          where token not in(
+            select td.unit_token from transaksi t 
+            join transaksi_detail td on td.code = t.code 
+            where t.status = 1 and td.status = 1
+            and td.unit_token is not null
+          )
+          and u.status = 1 and c.desc = 'play/pause'
+          `, {
+      type: sequelize.QueryTypes.SELECT
+    })
+
+    for (const transaksi of getAll) {
+      totalProcessed++;
+      try {
+        console.log(`🔌 Mengirim perintah ADB ke ${transaksi.ip_address} dengan command '${transaksi.command}'`);
+        const adbResult = await executeAdbControl(transaksi.ip_address, transaksi.command);
+        console.log(`✅ ADB command executed successfully for ${transaksi.ip_address}`);
+        totalSuccess++;
+
+        adbResults.push({
+          ip: transaksi.ip_address,
+          ...adbResult
+        });
+      } catch (error) {
+        totalFailed++;
+        adbResults.push({
+          success: false,
+          ip: transaksi.ip_address,
+          message: error.message || "ADB command failed",
+          error: error
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Perintah Sleep TV selesai diproses.`,
+      summary: {
+        total_units: totalProcessed,
+        success: totalSuccess,
+        failed: totalFailed
+      },
+      adb_results: adbResults
+    });
+
+  } catch (error) {
+    console.error('❌ Error in /time_out endpoint:', error);
+    return res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan internal saat memproses timeout.",
       error: error.message
     });
   }
