@@ -605,6 +605,336 @@ router.get("/tv/:token/mute", verifyToken, async (req, res) => {
   }
 });
 
+// ✅ Kirim perintah ke TV tertentu via WebSocket
+router.post('/tv/command', verifyToken, (req, res) => {
+  const { tvId, command } = req.body;
+
+  if (!tvId || !command) {
+    return res.status(400).json({ 
+      success: false,
+      message: 'tvId and command are required' 
+    });
+  }
+
+  // Ambil tvConnections dari app.locals
+  const tvConnections = req.app.locals.tvConnections;
+  
+  if (!tvConnections) {
+    return res.status(500).json({ 
+      success: false,
+      message: 'WebSocket connections not available' 
+    });
+  }
+
+  const ws = tvConnections.get(tvId);
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return res.status(404).json({ 
+      success: false,
+      message: 'TV not connected or unavailable',
+      tvId 
+    });
+  }
+
+  try {
+    ws.send(JSON.stringify({ type: 'command', command }));
+    console.log(`📤 Sent command ${command} to ${tvId}`);
+    logInfo(`TV Command sent`, { tvId, command, userId: req.user?.userId });
+
+    res.json({ 
+      success: true, 
+      message: `Command ${command} sent to ${tvId}`,
+      data: { tvId, command }
+    });
+  } catch (error) {
+    console.error(`Error sending command to ${tvId}:`, error);
+    logError(error, req);
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send command to TV',
+      error: error.message
+    });
+  }
+});
+
+// ✅ Lihat semua TV yang aktif
+router.get('/tv/active', verifyToken, (req, res) => {
+  try {
+    const tvConnections = req.app.locals.tvConnections;
+    const tvStatus = req.app.locals.tvStatus;
+    
+    if (!tvConnections) {
+      return res.status(500).json({ 
+        success: false,
+        message: 'WebSocket connections not available' 
+      });
+    }
+
+    const connectedTVs = [];
+    const now = new Date();
+
+    for (const [tvId, ws] of tvConnections.entries()) {
+      const isConnected = ws.readyState === WebSocket.OPEN;
+      const status = tvStatus[tvId];
+      
+      connectedTVs.push({
+        id: tvId,
+        connected: isConnected,
+        lastPing: status?.lastPing || null,
+        ipAddress: status?.ipAddress || null,
+        lastSeenSecondsAgo: status?.lastPing ? 
+          Math.floor((now - status.lastPing) / 1000) : null
+      });
+    }
+
+    res.json({ 
+      success: true,
+      data: {
+        connectedTVs,
+        summary: {
+          total: connectedTVs.length,
+          connected: connectedTVs.filter(tv => tv.connected).length,
+          disconnected: connectedTVs.filter(tv => !tv.connected).length
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error getting active TVs:', error);
+    logError(error, req);
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get active TVs',
+      error: error.message
+    });
+  }
+});
+
+// ✅ TV status detail
+router.get('/tv/status/:tvId', verifyToken, (req, res) => {
+  const { tvId } = req.params;
+  const tvConnections = req.app.locals.tvConnections;
+  const tvStatus = req.app.locals.tvStatus;
+  
+  const ws = tvConnections?.get(tvId);
+  const status = tvStatus?.[tvId];
+  const now = new Date();
+  
+  if (!ws && !status) {
+    return res.status(404).json({
+      success: false,
+      message: 'TV not found',
+      tvId
+    });
+  }
+
+  res.json({
+    success: true,
+    data: {
+      tvId,
+      connected: ws ? ws.readyState === WebSocket.OPEN : false,
+      lastPing: status?.lastPing || null,
+      ipAddress: status?.ipAddress || null,
+      lastSeenSecondsAgo: status?.lastPing ? 
+        Math.floor((now - status.lastPing) / 1000) : null,
+      status: ws && ws.readyState === WebSocket.OPEN ? 'ONLINE' : 'OFFLINE'
+    }
+  });
+});
+
+// Keycode 24: VOLUME_UP
+router.get("/tv/:token/volume_up", verifyToken, async (req, res) => {
+  const { token } = req.params;
+
+  try {
+    const checkunit = await history_units.findOne({
+      where: { token: token }
+    });
+
+    let getIP;
+    const commandDesc = 'volume_up';
+
+    if (!checkunit) {
+      getIP = await sequelize.query(`
+                SELECT b.ip_address, c.command FROM units u 
+                JOIN brandtv b ON b.id = u.brandtvid
+                JOIN codetv c ON c.id = b.codetvid
+                WHERE u.status = 1 AND c.desc = ? AND u.token = ?
+            `, {
+        replacements: [commandDesc, token], // Menggunakan commandDesc
+        type: sequelize.QueryTypes.SELECT,
+      });
+    } else {
+      getIP = await sequelize.query(`
+                SELECT b.ip_address, c.command FROM units u 
+                JOIN brandtv b ON b.id = u.brandtvid
+                JOIN codetv c ON c.id = b.codetvid
+                WHERE u.status = 1 AND c.desc = ? AND u.id = ?
+            `, {
+        replacements: [commandDesc, checkunit.unitid], // Menggunakan commandDesc
+        type: sequelize.QueryTypes.SELECT
+      });
+    }
+
+    // Penanganan Data Kosong
+    if (!getIP || getIP.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Unit atau perintah 'volume_up' tidak ditemukan."
+      });
+    }
+
+    const unitData = getIP[0];
+
+    // Eksekusi ADB dan Menunggu Hasil
+    const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
+
+    // Response Sukses
+    return res.json({
+      success: true,
+      message: "Perintah Volume Up berhasil dikirim.",
+      adb_result: adbResult
+    });
+
+  } catch (error) {
+    console.error("Error pada /tv/:token/volume_up:", error);
+
+    // Response Gagal
+    return res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan internal saat menaikkan volume.",
+      error: error.message
+    });
+  }
+});
+
+// Keycode 25: VOLUME_DOWN
+router.get("/tv/:token/volume_down", verifyToken, async (req, res) => {
+  const { token } = req.params;
+
+  try {
+    // PERHATIAN: Perbaikan token pada findOne
+    const checkunit = await history_units.findOne({
+      where: { token: token } // Menggunakan 'token' dari params, bukan unitTokens[0]
+    });
+
+    let getIP;
+    const commandDesc = 'volume_down';
+
+    if (!checkunit) {
+      getIP = await sequelize.query(`
+                SELECT b.ip_address, c.command FROM units u 
+                JOIN brandtv b ON b.id = u.brandtvid
+                JOIN codetv c ON c.id = b.codetvid
+                WHERE u.status = 1 AND c.desc = ? AND u.token = ?
+            `, {
+        replacements: [commandDesc, token],
+        type: sequelize.QueryTypes.SELECT,
+      });
+    } else {
+      getIP = await sequelize.query(`
+                SELECT b.ip_address, c.command FROM units u 
+                JOIN brandtv b ON b.id = u.brandtvid
+                JOIN codetv c ON c.id = b.codetvid
+                WHERE u.status = 1 AND c.desc = ? AND u.id = ?
+            `, {
+        replacements: [commandDesc, checkunit.unitid],
+        type: sequelize.QueryTypes.SELECT
+      });
+    }
+
+    // Penanganan Data Kosong
+    if (!getIP || getIP.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Unit atau perintah 'volume_down' tidak ditemukan."
+      });
+    }
+
+    const unitData = getIP[0];
+    const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
+
+    return res.json({
+      success: true,
+      message: "Perintah Volume Down berhasil dikirim.",
+      adb_result: adbResult
+    });
+
+  } catch (error) {
+    console.error("Error pada /tv/:token/volume_down:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan internal saat menurunkan volume.",
+      error: error.message
+    });
+  }
+});
+
+// Keycode 164: VOLUME_MUTE
+router.get("/tv/:token/mute", verifyToken, async (req, res) => {
+  const { token } = req.params;
+
+  try {
+    // PERHATIAN: Perbaikan token pada findOne
+    const checkunit = await history_units.findOne({
+      where: { token: token } // Menggunakan 'token' dari params, bukan unitTokens[0]
+    });
+
+    let getIP;
+    const commandDesc = 'volume_mute';
+
+    if (!checkunit) {
+      // PERHATIAN: Hapus const yang berlebihan di sini
+      getIP = await sequelize.query(`
+                SELECT b.ip_address, c.command FROM units u 
+                JOIN brandtv b ON b.id = u.brandtvid
+                JOIN codetv c ON c.id = b.codetvid
+                WHERE u.status = 1 AND c.desc = ? AND u.token = ?
+            `, {
+        replacements: [commandDesc, token],
+        type: sequelize.QueryTypes.SELECT,
+      });
+    } else {
+      getIP = await sequelize.query(`
+                SELECT b.ip_address, c.command FROM units u 
+                JOIN brandtv b ON b.id = u.brandtvid
+                JOIN codetv c ON c.id = b.codetvid
+                WHERE u.status = 1 AND c.desc = ? AND u.id = ?
+            `, {
+        replacements: [commandDesc, checkunit.unitid],
+        type: sequelize.QueryTypes.SELECT
+      });
+    }
+
+    // Penanganan Data Kosong
+    if (!getIP || getIP.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Unit atau perintah 'volume_mute' tidak ditemukan."
+      });
+    }
+
+    const unitData = getIP[0];
+    const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
+
+    return res.json({
+      success: true,
+      message: "Perintah Mute berhasil dikirim.",
+      adb_result: adbResult
+    });
+
+  } catch (error) {
+    console.error("Error pada /tv/:token/mute:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan internal saat memproses perintah mute.",
+      error: error.message
+    });
+  }
+});
+
 // Register TV endpoint
 router.post('/registertv', verifyToken, async (req, res) => {
   try {
