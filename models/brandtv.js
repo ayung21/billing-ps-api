@@ -19,6 +19,10 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.INTEGER,
       allowNull: false
     },
+    tv_id: {
+      type: DataTypes.TEXT,
+      allowNull: false
+    },
     ip_address: {
       type: DataTypes.STRING(15),
       allowNull: true

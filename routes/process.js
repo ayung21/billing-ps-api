@@ -7,7 +7,7 @@ const { exec } = require("child_process");
 const router = express.Router();
 
 // Import model cabang, users, dan access
-let Transaksi, history_units, TransaksiDetail, Unit;
+let Transaksi, history_units, TransaksiDetail, Unit, Brandtv;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
@@ -15,6 +15,7 @@ try {
   history_units = models.history_units;
   TransaksiDetail = models.transaksi_detail;
   Unit = models.units;
+  Brandtv = models.brandtv;
 
   if (!Transaksi) {
     console.error('❌ Transaksi model not found in models');
@@ -603,5 +604,109 @@ router.get("/tv/:token/mute", verifyToken, async (req, res) => {
     });
   }
 });
+
+// Register TV endpoint
+router.post('/registertv', verifyToken, async (req, res) => {
+  try {
+    const { tv_id, model, ip, modeltv, cabangid } = req.body;
+
+    if (!tv_id || !modeltv || !ip || !cabangid) {
+      return res.status(400).json({
+        success: false,
+        message: 'tv_id, modeltv, ip, and cabangid are required'
+      });
+    }
+
+    // Cek apakah tv_id sudah ada
+    const existingTv = await Brandtv.findOne({ where: { tv_id } });
+
+    if (existingTv) {
+      return res.json({
+        success: true,
+        message: 'TV already registered',
+        data: existingTv
+      });
+    }
+
+    // Insert TV baru
+    const newTv = await Brandtv.create({
+      name: modeltv,
+      codetv: 1,
+      cabangid: parseInt(cabangid),
+      tv_id: tv_id,
+      ip_address: ip
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: 'TV registered successfully',
+      data: newTv
+    });
+  } catch (error) {
+    console.error('Error in /registertv:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+router.post('/heartbeat', verifyToken, async (req, res) => {
+  try {
+    const { tv_id, model, ip, modeltv, cabangid } = req.body;
+
+    // Validasi input
+    if (!tv_id || !ip || !modeltv || !cabangid) {
+      return res.status(400).json({
+        success: false,
+        message: 'tv_id, modeltv, ip, and cabangid are required'
+      });
+    }
+
+    // Cek apakah TV sudah terdaftar
+    let existingTv = await Brandtv.findOne({ where: { tv_id } });
+
+    if (existingTv) {
+      // ✅ Update IP address jika berubah (heartbeat update)
+      if (existingTv.ip_address !== ip) {
+        await existingTv.update({ ip_address: ip });
+      }
+
+      // Tambahkan log heartbeat time (optional)
+      await existingTv.update({ last_seen: new Date() });
+
+      return res.json({
+        success: true,
+        message: '✅ TV heartbeat received (already registered)',
+        data: existingTv
+      });
+    }
+
+    // ✅ TV belum ada → daftarkan baru
+    const newTv = await Brandtv.create({
+      name: modeltv,
+      codetv: 1,
+      cabangid: parseInt(cabangid),
+      tv_id: tv_id,
+      ip_address: ip,
+      last_seen: new Date()
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: '🆕 TV registered successfully',
+      data: newTv
+    });
+  } catch (error) {
+    console.error('❌ Error in /heartbeat:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 
 module.exports = router;
