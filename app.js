@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const http = require('http');
+const WebSocket = require('ws');
 const { testConnection, sequelize } = require('./config/database');
 const { logError, logInfo, requestLogger } = require('./middleware/logger');
 const tvStatusLogger = require('./middleware/tvStatusLogger');
@@ -8,41 +10,74 @@ const tvStatusLogger = require('./middleware/tvStatusLogger');
 // Load environment variables
 dotenv.config();
 
-// Create Express application
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server, path: '/ws' });
+
+// ✅ Map untuk menyimpan koneksi TV
+const tvConnections = new Map();
 
 // ✅ TV Status tracking
 const tvStatus = {};
+const TIMEOUT_MS = 3 * 60 * 1000; // 3 menit
 
-// 🕒 Waktu timeout dianggap mati (ms)
-const TIMEOUT_MS = 3 * 60 * 1000; // 3 menit tanpa ping → dianggap offline
+// ============================
+// 🔌 WEBSOCKET HANDLER
+// ============================
+wss.on('connection', (ws, req) => {
+  const ip = req.socket.remoteAddress;
+  console.log(`📺 TV connected from ${ip}`);
 
-// Initialize database and sync models
-// app.js
-const initializeDatabase = async () => {
-  const connected = await testConnection();
-  if (connected) {
+  ws.isAlive = true;
+
+  // Saat TV kirim pesan
+  ws.on('message', (message) => {
     try {
-      // ✅ Gunakan force: false untuk development, atau hilangkan alter: true
-      await sequelize.sync({ force: false }); // atau sync() saja
-      console.log('✅ All models synchronized successfully.');
-      logInfo('Database models synchronized successfully');
-    } catch (error) {
-      console.error('❌ Model synchronization failed:', error.message);
-      logError(error);
+      const data = JSON.parse(message);
+      if (data.type === 'register') {
+        const tvId = data.tv_id || data.id || ip;
+        tvConnections.set(tvId, ws);
+        console.log(`✅ TV registered: ${tvId}`);
+        ws.send(JSON.stringify({ type: 'welcome', message: `Registered as ${tvId}` }));
+      } else if (data.type === 'ping') {
+        ws.isAlive = true;
+        const tvId = data.tv_id || ip;
+        tvStatus[tvId] = { lastPing: new Date(), ipAddress: ip };
+      } else {
+        console.log(`📩 Message from ${ip}:`, data);
+      }
+    } catch (err) {
+      console.error('Error parsing message:', err);
     }
-  }
-};
+  });
 
-// Initialize database on startup
-initializeDatabase();
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
 
-// Middleware
+  ws.on('close', () => {
+    console.log(`❌ TV disconnected: ${ip}`);
+    for (const [id, socket] of tvConnections.entries()) {
+      if (socket === ws) tvConnections.delete(id);
+    }
+  });
+});
+
+// ✅ Heartbeat untuk memastikan koneksi tetap hidup
+setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (!ws.isAlive) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+// ============================
+// 🔧 EXPRESS SETUP
+// ============================
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Add request logging middleware
 app.use(requestLogger);
 
 // Import routes
@@ -65,144 +100,71 @@ app.use('/api/member', memberRoutes);
 app.use('/api/transaksi', transaksiRoutes);
 app.use('/api/processcode', _process);
 
-// Default route
+// ✅ Export tvConnections untuk digunakan di routes lain
+app.locals.tvConnections = tvConnections;
+app.locals.tvStatus = tvStatus;
+
+// ============================
+// 🌐 API ENDPOINTS
+// ============================
+
 app.get('/', (req, res) => {
   res.json({
-    message: 'Billing PS API Server is running!',
+    message: 'Billing PS API Server + WebSocket is running!',
+    ws: '/ws',
     status: 'OK',
     timestamp: new Date().toISOString()
   });
 });
 
-app.get('/ping', (req, res) => {
-  const id = req.query.id || "unknown";
-  const now = new Date();
-  const ipAddress = req.ip || req.connection.remoteAddress;
-  const userAgent = req.get('User-Agent') || 'unknown';
+// ✅ Kirim perintah ke TV tertentu
+app.post('/api/tv/command', (req, res) => {
+  const { tv_id, command } = req.body;
 
-  // Cek apakah TV sebelumnya offline
-  const wasOffline = !tvStatus[id] || (now - tvStatus[id].lastPing) >= TIMEOUT_MS;
-
-  // Update status TV
-  tvStatus[id] = {
-    lastPing: now,
-    ipAddress,
-    userAgent
-  };
-
-  // Log ke console
-  console.log(`[TV PING] ID: ${id} at ${now.toISOString()}`);
-  
-  // Log ke file umum
-  logInfo('TV Ping received', { 
-    tvId: id, 
-    timestamp: now.toISOString(),
-    ipAddress,
-    userAgent
-  });
-
-  // Log ke statustv.log
-  tvStatusLogger.logPing(id, ipAddress, userAgent);
-  
-  // Log jika TV kembali online
-  if (wasOffline) {
-    tvStatusLogger.logTVOnline(id);
+  if (!tv_id || !command) {
+    return res.status(400).json({ error: 'tv_id and command are required' });
   }
 
-  res.json({
-    status: "ok",
-    tv: id,
-    time: now.toISOString(),
-    message: "Ping received successfully"
-  });
+  const ws = tvConnections.get(tv_id);
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return res.status(404).json({ error: 'TV not connected or unavailable' });
+  }
+
+  ws.send(JSON.stringify({ type: 'command', command }));
+  console.log(`📤 Sent command ${command} to ${tv_id}`);
+  logInfo(`Command ${command} sent to ${tv_id}`);
+
+  res.json({ success: true, message: `Command ${command} sent to ${tv_id}` });
 });
 
-// ✅ Route untuk melihat status semua TV
-app.get('/status', (req, res) => {
-  const now = new Date();
-  const statusList = {};
-
-  Object.keys(tvStatus).forEach((id) => {
-    const lastPing = tvStatus[id].lastPing;
-    const diff = now - lastPing;
-    const online = diff < TIMEOUT_MS;
-
-    statusList[id] = {
-      online,
-      lastPing: lastPing.toISOString(),
-      lastSeenSecondsAgo: Math.floor(diff / 1000),
-      lastSeenMinutesAgo: Math.floor(diff / (1000 * 60)),
-      ipAddress: tvStatus[id].ipAddress,
-      userAgent: tvStatus[id].userAgent,
-      status: online ? 'ONLINE' : 'OFFLINE'
-    };
-  });
-
-  // Log status check
-  const onlineCount = Object.values(statusList).filter(tv => tv.online).length;
-  const totalCount = Object.keys(statusList).length;
-  
-  console.log(`[TV STATUS] ${onlineCount}/${totalCount} TVs online`);
-  
-  // Log ke file umum
-  logInfo('TV Status checked', { 
-    onlineCount, 
-    totalCount, 
-    timestamp: now.toISOString() 
-  });
-
-  // Log ke statustv.log
-  tvStatusLogger.logStatusCheck(onlineCount, totalCount);
-
-  res.json({
-    summary: {
-      total: totalCount,
-      online: onlineCount,
-      offline: totalCount - onlineCount,
-      checkTime: now.toISOString()
-    },
-    tvs: statusList
-  });
+// ✅ Lihat semua TV yang aktif
+app.get('/api/tv/active', (req, res) => {
+  const list = Array.from(tvConnections.keys());
+  res.json({ connectedTVs: list, count: list.length });
 });
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  logError(err, req);
-  
-  res.status(500).json({
-    message: 'Something went wrong!',
-    error: process.env.NODE_ENV === 'development' ? err.message : 'Internal Server Error'
-  });
-});
+// ============================
+// 🧱 DATABASE INIT
+// ============================
+(async () => {
+  const connected = await testConnection();
+  if (connected) {
+    await sequelize.sync({ force: false });
+    console.log('✅ Database synchronized.');
+  }
+})();
 
-// 404 handler
-// app.use('*', (req, res) => {
-//   res.status(404).json({
-//     message: 'Route not found',
-//     path: req.originalUrl
-//   });
-// });
-
-// Start server
+// ============================
+// 🚀 START SERVER
+// ============================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  console.log(`Access the API at http://localhost:${PORT}`);
-  logInfo(`Server started on port ${PORT}`, { port: PORT, env: process.env.NODE_ENV });
-});
-
-// Handle process termination gracefully
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  logInfo('Server shutting down gracefully');
-  process.exit(0);
+server.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`🌐 WebSocket at ws://localhost:${PORT}/ws`);
+  logInfo(`Server started with WebSocket support on port ${PORT}`);
 });
 
 process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down gracefully');
-  logInfo('Server shutting down gracefully');
-  process.exit(0);
+  console.log('SIGINT received. Shutting down...');
+  server.close(() => process.exit(0));
 });
-
-module.exports = app;
