@@ -607,9 +607,37 @@ router.get("/tv/:token/mute", verifyToken, async (req, res) => {
   }
 });
 
+// Endpoint untuk cek TV yang terhubung
+router.get('/tv/connected', verifyToken, (req, res) => {
+  const tvConnections = req.app.locals.tvConnections;
+  
+  if (!tvConnections) {
+    return res.json({ 
+      success: true,
+      connectedTVs: [],
+      count: 0
+    });
+  }
+
+  const connectedTVs = [];
+  tvConnections.forEach((ws, tvId) => {
+    connectedTVs.push({
+      tvId,
+      connected: ws.readyState === WebSocket.OPEN,
+      readyState: ws.readyState
+    });
+  });
+
+  res.json({ 
+    success: true,
+    connectedTVs,
+    count: connectedTVs.length
+  });
+});
+
 // ✅ Kirim perintah ke TV tertentu via WebSocket
 router.post('/tv/command', verifyToken, (req, res) => {
-  const { tvId, command } = req.body;
+  const { tvId, command, target } = req.body;
 
   if (!tvId || !command) {
     return res.status(400).json({ 
@@ -638,7 +666,7 @@ router.post('/tv/command', verifyToken, (req, res) => {
   }
 
   try {
-    ws.send(JSON.stringify({ type: 'command', command }));
+    ws.send(JSON.stringify({ type: 'command', command, target }));
     console.log(`📤 Sent command ${command} to ${tvId}`);
     logInfo(`TV Command sent`, { tvId, command, userId: req.user?.userId });
 
@@ -938,7 +966,7 @@ router.get("/tv/:token/mute", verifyToken, async (req, res) => {
 });
 
 // Register TV endpoint
-router.post('/registertv', verifyToken, async (req, res) => {
+router.post('/registertv', async (req, res) => {
   try {
     const { tv_id, model, ip, modeltv, cabangid } = req.body;
 
@@ -948,7 +976,7 @@ router.post('/registertv', verifyToken, async (req, res) => {
         message: 'tv_id, modeltv, ip, and cabangid are required'
       });
     }
-
+console.log(req.body);
     // Cek apakah tv_id sudah ada
     const existingTv = await Brandtv.findOne({ where: { tv_id } });
 
@@ -963,7 +991,7 @@ router.post('/registertv', verifyToken, async (req, res) => {
     // Insert TV baru
     const newTv = await Brandtv.create({
       name: modeltv,
-      codetv: 1,
+      codetvid: 1,
       cabangid: parseInt(cabangid),
       tv_id: tv_id,
       ip_address: ip
@@ -984,7 +1012,7 @@ router.post('/registertv', verifyToken, async (req, res) => {
   }
 });
 
-router.post('/heartbeat', verifyToken, async (req, res) => {
+router.post('/heartbeat', async (req, res) => {
   try {
     const { tv_id, model, ip, modeltv, cabangid } = req.body;
 
@@ -1018,7 +1046,7 @@ router.post('/heartbeat', verifyToken, async (req, res) => {
     // ✅ TV belum ada → daftarkan baru
     const newTv = await Brandtv.create({
       name: modeltv,
-      codetv: 1,
+      codetvid: 1,
       cabangid: parseInt(cabangid),
       tv_id: tv_id,
       ip_address: ip,
