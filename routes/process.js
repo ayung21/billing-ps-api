@@ -637,12 +637,12 @@ router.get('/tv/connected', verifyToken, (req, res) => {
 
 // ✅ Kirim perintah ke TV tertentu via WebSocket
 router.post('/tv/command', verifyToken, (req, res) => {
-  const { tvId, command, target } = req.body;
+  const { tvId, command } = req.body;
 
   if (!tvId || !command) {
     return res.status(400).json({ 
       success: false,
-      message: 'tvId and command are required' 
+      message: 'tvId and command are required'
     });
   }
 
@@ -666,7 +666,7 @@ router.post('/tv/command', verifyToken, (req, res) => {
   }
 
   try {
-    ws.send(JSON.stringify({ type: 'command', command, target }));
+    ws.send(JSON.stringify({ type: 'command', tvId, command }));
     console.log(`📤 Sent command ${command} to ${tvId}`);
     logInfo(`TV Command sent`, { tvId, command, userId: req.user?.userId });
 
