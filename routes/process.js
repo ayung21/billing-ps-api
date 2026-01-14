@@ -28,56 +28,6 @@ try {
   console.error('❌ Error loading models:', error.message);
 }
 
-const executeAdbControl = (ip, adbCommand) => {
-  return new Promise((resolve, reject) => {
-    const fullAdbAddress = `${ip}:5555`;
-    const connectCmd = `adb connect ${fullAdbAddress}`;
-
-    exec(connectCmd, { timeout: 10000 }, (connectError, connectStdout, connectStderr) => {
-
-      if (connectError || connectStderr.includes("unable to connect")) {
-        console.log('❌ Connection failed');
-        return reject({
-          success: false,
-          message: `❌ Gagal terhubung ke TV (${ip}).`,
-          details: "Pastikan TV menyala, Network Debugging/ADB aktif, dan tidak terhalang firewall/VPN.",
-          adb_output: connectStderr.trim() || connectStdout.trim()
-        });
-      }
-
-      // 2. KONEKSI BERHASIL, jalankan PERINTAH KONTROL
-      const controlCmd = `adb -s ${fullAdbAddress} ${adbCommand}`;
-
-      exec(controlCmd, (controlError, controlStdout, controlStderr) => {
-        // Opsional: Coba putuskan koneksi setelah selesai
-        exec(`adb disconnect ${fullAdbAddress}`);
-
-        if (controlError) {
-          console.log('❌ Control command failed');
-          return reject({
-            success: false,
-            message: `⚠️ Terhubung, tetapi perintah kontrol gagal dijalankan.`,
-            error: controlStderr.trim(),
-            command_executed: adbCommand
-          });
-        }
-
-        console.log('✅ Control command success');
-        // 3. KONTROL BERHASIL
-        resolve({
-          success: true,
-          ip: ip,
-          message: `✅ Perintah '${adbCommand}' berhasil dikirim ke TV.`,
-          command_executed: adbCommand,
-          output: controlStdout.trim()
-        });
-      });
-    });
-  });
-};
-
-// --- ENDPOINTS KHUSUS UNTUK KONTROL TV ---
-
 router.get('/', (req, res) => {
   res.json({
     message: 'Billing PS API - ADB Control Endpoint is active.',
@@ -85,6 +35,8 @@ router.get('/', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// ...existing code...
 
 router.get("/time_out", async (req, res) => {
   console.log('time out endpoint called');
@@ -112,6 +64,8 @@ router.get("/time_out", async (req, res) => {
       include: includeOptions
     });
 
+    const tvConnections = req.app.locals.tvConnections;
+    const tvResponses = req.app.locals.tvResponses; // ✅ TAMBAHKAN INI
     const adbResults = [];
     let totalProcessed = 0;
     let totalSuccess = 0;
@@ -181,7 +135,7 @@ router.get("/time_out", async (req, res) => {
 
           if (!checkunit) {
             getIP = await sequelize.query(`
-              SELECT b.ip_address, c.command FROM units u 
+              SELECT b.ip_address, b.tv_id, c.command, c.code FROM units u 
               JOIN brandtv b ON b.id = u.brandtvid
               JOIN codetv c ON c.id = b.codetvid
               WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
@@ -191,7 +145,7 @@ router.get("/time_out", async (req, res) => {
             });
           } else {
             getIP = await sequelize.query(`
-              SELECT b.ip_address, c.command FROM units u 
+              SELECT b.ip_address, b.tv_id, c.command, c.code FROM units u 
               JOIN brandtv b ON b.id = u.brandtvid
               JOIN codetv c ON c.id = b.codetvid
               WHERE u.status = 1 AND c.desc = 'on/off' AND u.id = ?
@@ -214,35 +168,124 @@ router.get("/time_out", async (req, res) => {
           }
 
           const unitData = getIP[0];
+          const ws = tvConnections.get(unitData.tv_id);
 
-          // 4. JALANKAN KONTROL ADB
-          console.log(`🔌 Mengirim perintah ADB ke ${unitData.ip_address} dengan command '${unitData.command}'`);
-          const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            totalFailed++;
+            adbResults.push({
+              token: unitToken,
+              transaction_code: transaksi.code,
+              success: false,
+              message: `TV ${unitData.tv_id} tidak terhubung atau unavailable`
+            });
+            continue;
+          }
 
-          // 5. UPDATE STATUS TRANSAKSI MENJADI 0 (SELESAI)
-          await transaksi.update({
-            status: 0,
-          });
+          // 4. KIRIM COMMAND KE TV
+          const powerOffCommand = 223; // ✅ Definisikan command sebagai konstanta
+          console.log(`📤 Mengirim perintah Power Off ke TV ${unitData.tv_id}, command: ${powerOffCommand}`);
+          ws.send(JSON.stringify({ 
+            type: 'command', 
+            tvId: unitData.tv_id, // ✅ Server kirim dengan tvId (camelCase)
+            command: powerOffCommand,
+            target: 'power_off',
+            timestamp: new Date().toISOString()
+          }));
 
-          console.log(`✅ Transaksi ${transaksi.code} berhasil diupdate status = 0`);
-          totalSuccess++;
+          // ✅ 5. TUNGGU RESPONSE DARI TV (dengan timeout)
+          let tvResponse = null;
+          const maxWaitTime = 5000; // 5 detik timeout
+          const startWait = Date.now();
 
-          adbResults.push({
-            token: unitToken,
-            transaction_code: transaksi.code,
-            ip_address: unitData.ip_address,
-            start_time: createdAt,
-            total_hours: totalHours,
-            end_time: endTime,
-            transaction_updated: true,
-            details_processed: group.allDetails.map(d => ({
-              id: d.id,
-              type: d.type,
-              hours: d.hours,
-              created_at: d.createdAt
-            })),
-            ...adbResult
-          });
+          console.log(`⏳ Menunggu response dari TV ${unitData.tv_id}...`);
+
+          while (Date.now() - startWait < maxWaitTime) {
+            // Cek apakah ada response dari TV
+            const response = tvResponses.get(unitData.tv_id);
+            
+            // ✅ Cek dengan powerOffCommand (223), bukan unitData.command
+            if (response && response.command === powerOffCommand) {
+              tvResponse = response;
+              console.log(`📥 Response diterima dari TV ${unitData.tv_id}:`, tvResponse);
+              break;
+            }
+            
+            // Tunggu 100ms sebelum cek lagi
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+
+          // Debug jika tidak ada response
+          if (!tvResponse) {
+            console.warn(`⚠️ Tidak ada response dari TV ${unitData.tv_id} setelah ${maxWaitTime}ms`);
+            console.log(`Current responses in map:`, Array.from(tvResponses.keys()));
+          }
+
+          // ✅ 6. EVALUASI RESPONSE (sesuaikan dengan "success" dan "failed")
+          if (tvResponse && tvResponse.status === 'success') {
+            console.log(`✅ TV ${unitData.tv_id} berhasil dimatikan`);
+            
+            // 7. UPDATE STATUS TRANSAKSI MENJADI 0 (SELESAI)
+            await transaksi.update({
+              status: 0,
+            });
+
+            console.log(`✅ Transaksi ${transaksi.code} berhasil diupdate status = 0`);
+            totalSuccess++;
+
+            adbResults.push({
+              token: unitToken,
+              transaction_code: transaksi.code,
+              tv_id: unitData.tv_id,
+              ip_address: unitData.ip_address,
+              start_time: createdAt,
+              total_hours: totalHours,
+              end_time: endTime,
+              transaction_updated: true,
+              command_sent: powerOffCommand,
+              command_status: tvResponse.status,
+              command_message: tvResponse.message,
+              success: true,
+              details_processed: group.allDetails.map(d => ({
+                id: d.id,
+                type: d.type,
+                hours: d.hours,
+                created_at: d.createdAt
+              }))
+            });
+
+            // Clear response setelah digunakan
+            tvResponses.delete(unitData.tv_id);
+
+          } else if (tvResponse && (tvResponse.status === 'failed' || tvResponse.status === 'error')) {
+            console.error(`❌ TV ${unitData.tv_id} gagal eksekusi command: ${tvResponse.error || tvResponse.message}`);
+            totalFailed++;
+
+            adbResults.push({
+              token: unitToken,
+              transaction_code: transaksi.code,
+              tv_id: unitData.tv_id,
+              success: false,
+              command_sent: powerOffCommand,
+              command_status: tvResponse.status,
+              message: tvResponse.message || 'Command execution failed',
+              error: tvResponse.error
+            });
+
+          } else {
+            // Timeout - tidak ada response
+            console.warn(`⚠️ TV ${unitData.tv_id} tidak merespon dalam ${maxWaitTime}ms`);
+            totalFailed++;
+
+            adbResults.push({
+              token: unitToken,
+              transaction_code: transaksi.code,
+              tv_id: unitData.tv_id,
+              success: false,
+              command_sent: powerOffCommand,
+              message: 'TV tidak merespon (timeout)',
+              timeout: true
+            });
+          }
 
         } catch (error) {
           totalFailed++;
@@ -251,7 +294,7 @@ router.get("/time_out", async (req, res) => {
             token: unitToken,
             transaction_code: transaksi.code,
             success: false,
-            message: error.message || "ADB command failed",
+            message: error.message || "Command failed",
             error: error
           });
         }
@@ -280,6 +323,8 @@ router.get("/time_out", async (req, res) => {
   }
 });
 
+// ...existing code...
+
 router.get("/sleep", async (req, res) => {
   console.log('loop mode sleep');
   try {
@@ -287,40 +332,120 @@ router.get("/sleep", async (req, res) => {
     let totalProcessed = 0;
     let totalSuccess = 0;
     let totalFailed = 0;
+    const tvConnections = req.app.locals.tvConnections;
+    const tvResponses = req.app.locals.tvResponses;
 
     const getAll = await sequelize.query(`
-          select b.ip_address, c.command  from units u 
-          join brandtv b on b.id = u.brandtvid 
-          join codetv c on c.id = b.codetvid 
-          where token not in(
-            select td.unit_token from transaksi t 
-            join transaksi_detail td on td.code = t.code 
-            where t.status = 1 and td.status = 1
-            and td.unit_token is not null
-          )
-          and u.status = 1 and c.desc = 'play/pause'
-          `, {
+      SELECT b.ip_address, b.tv_id, c.command FROM units u 
+      JOIN brandtv b ON b.id = u.brandtvid 
+      JOIN codetv c ON c.id = b.codetvid 
+      WHERE token NOT IN(
+        SELECT td.unit_token FROM transaksi t 
+        JOIN transaksi_detail td ON td.code = t.code 
+        WHERE t.status = 1 AND td.status = 1
+        AND td.unit_token IS NOT NULL
+      )
+      AND u.status = 1 AND c.desc = 'play/pause'
+    `, {
       type: sequelize.QueryTypes.SELECT
-    })
+    });
 
-    for (const transaksi of getAll) {
+    for (const unit of getAll) {
       totalProcessed++;
+      
       try {
-        console.log(`🔌 Mengirim perintah ADB ke ${transaksi.ip_address} dengan command '${transaksi.command}'`);
-        const adbResult = await executeAdbControl(transaksi.ip_address, transaksi.command);
-        console.log(`✅ ADB command executed successfully for ${transaksi.ip_address}`);
-        totalSuccess++;
+        const ws = tvConnections?.get(unit.tv_id);
+        
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          console.log(`⚠️ TV ${unit.tv_id} tidak terhubung, skip...`);
+          totalFailed++;
+          adbResults.push({
+            ip: unit.ip_address,
+            tv_id: unit.tv_id,
+            success: false,
+            message: 'TV not connected'
+          });
+          continue;
+        }
 
-        adbResults.push({
-          ip: transaksi.ip_address,
-          ...adbResult
-        });
+        // ✅ Kirim command via WebSocket dengan format yang benar
+        console.log(`📤 Mengirim perintah Sleep ke TV ${unit.tv_id} (command: ${unit.command})`);
+        ws.send(JSON.stringify({ 
+          type: 'command', 
+          tv_id: unit.tv_id,
+          command: unit.command, // Gunakan command dari database
+          target: 'sleep',
+          timestamp: new Date().toISOString()
+        }));
+
+        // ✅ Tunggu response dari TV (dengan timeout)
+        let tvResponse = null;
+        const maxWaitTime = 5000; // 5 detik timeout
+        const startWait = Date.now();
+        
+        while (Date.now() - startWait < maxWaitTime) {
+          const response = tvResponses.get(unit.tv_id);
+          
+          if (response && response.command === unit.command) {
+            tvResponse = response;
+            console.log(`📥 Response diterima dari TV ${unit.tv_id}:`, tvResponse);
+            break;
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        // ✅ Evaluasi response
+        if (tvResponse && tvResponse.status === 'success') {
+          console.log(`✅ Sleep command berhasil untuk TV ${unit.tv_id}`);
+          totalSuccess++;
+
+          adbResults.push({
+            ip: unit.ip_address,
+            tv_id: unit.tv_id,
+            success: true,
+            message: 'Sleep command sent successfully',
+            command: unit.command,
+            command_status: tvResponse.status
+          });
+
+          // Clear response
+          tvResponses.delete(unit.tv_id);
+
+        } else if (tvResponse && (tvResponse.status === 'failed' || tvResponse.status === 'error')) {
+          console.error(`❌ Sleep command gagal untuk TV ${unit.tv_id}: ${tvResponse.error}`);
+          totalFailed++;
+
+          adbResults.push({
+            ip: unit.ip_address,
+            tv_id: unit.tv_id,
+            success: false,
+            message: tvResponse.message,
+            error: tvResponse.error
+          });
+
+        } else {
+          // Timeout
+          console.warn(`⚠️ TV ${unit.tv_id} tidak merespon dalam ${maxWaitTime}ms`);
+          totalFailed++;
+
+          adbResults.push({
+            ip: unit.ip_address,
+            tv_id: unit.tv_id,
+            success: false,
+            message: 'TV tidak merespon (timeout)',
+            timeout: true
+          });
+        }
+
       } catch (error) {
         totalFailed++;
+        console.error(`Error sending sleep command to ${unit.tv_id}:`, error);
         adbResults.push({
           success: false,
-          ip: transaksi.ip_address,
-          message: error.message || "ADB command failed",
+          ip: unit.ip_address,
+          tv_id: unit.tv_id,
+          message: error.message || "Command failed",
           error: error
         });
       }
@@ -338,306 +463,18 @@ router.get("/sleep", async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error in /time_out endpoint:', error);
+    console.error('❌ Error in /sleep endpoint:', error);
     return res.status(500).json({
       success: false,
-      message: "Terjadi kesalahan internal saat memproses timeout.",
+      message: "Terjadi kesalahan internal saat memproses sleep.",
       error: error.message
     });
   }
-});
-
-router.get("/tv/:token/toggle_power", verifyToken, async (req, res) => {
-  const { token } = req.params;
-
-  try {
-    // 1. Dapatkan Unit History
-    const checkunit = await history_units.findOne({
-      where: { token: token }
-    });
-
-    // 2. Tentukan dan Jalankan Query
-    let getIP;
-
-    if (!checkunit) {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
-            `, {
-        replacements: [token],
-        type: sequelize.QueryTypes.SELECT,
-      });
-    } else {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = 'on/off' AND u.id = ?
-            `, {
-        replacements: [checkunit.unitid],
-        type: sequelize.QueryTypes.SELECT
-      });
-    }
-
-    // 3. PENANGANAN DATA KOSONG
-    if (!getIP || getIP.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Unit atau Perintah Power (on/off) tidak ditemukan."
-      });
-    }
-
-    const unitData = getIP[0];
-
-    // 4. JALANKAN KONTROL ADB
-    // Pastikan executeAdbControl menggunakan await karena ini adalah I/O
-    const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
-
-    // 5. RESPON KEBERHASILAN
-    return res.json({
-      success: true,
-      message: "Perintah Power TV berhasil dikirim.",
-      adb_result: adbResult
-    });
-
-  } catch (error) {
-    console.error("Error pada /tv/:token/toggle_power:", error);
-
-    // 6. RESPON KEGAGALAN SERVER/ADB
-    return res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan internal saat memproses perintah.",
-      error: error.message
-    });
-  }
-});
-
-// Keycode 24: VOLUME_UP
-router.get("/tv/:token/volume_up", verifyToken, async (req, res) => {
-  const { token } = req.params;
-
-  try {
-    const checkunit = await history_units.findOne({
-      where: { token: token }
-    });
-
-    let getIP;
-    const commandDesc = 'volume_up';
-
-    if (!checkunit) {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.token = ?
-            `, {
-        replacements: [commandDesc, token], // Menggunakan commandDesc
-        type: sequelize.QueryTypes.SELECT,
-      });
-    } else {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.id = ?
-            `, {
-        replacements: [commandDesc, checkunit.unitid], // Menggunakan commandDesc
-        type: sequelize.QueryTypes.SELECT
-      });
-    }
-
-    // Penanganan Data Kosong
-    if (!getIP || getIP.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Unit atau perintah 'volume_up' tidak ditemukan."
-      });
-    }
-
-    const unitData = getIP[0];
-
-    // Eksekusi ADB dan Menunggu Hasil
-    const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
-
-    // Response Sukses
-    return res.json({
-      success: true,
-      message: "Perintah Volume Up berhasil dikirim.",
-      adb_result: adbResult
-    });
-
-  } catch (error) {
-    console.error("Error pada /tv/:token/volume_up:", error);
-
-    // Response Gagal
-    return res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan internal saat menaikkan volume.",
-      error: error.message
-    });
-  }
-});
-
-// Keycode 25: VOLUME_DOWN
-router.get("/tv/:token/volume_down", verifyToken, async (req, res) => {
-  const { token } = req.params;
-
-  try {
-    // PERHATIAN: Perbaikan token pada findOne
-    const checkunit = await history_units.findOne({
-      where: { token: token } // Menggunakan 'token' dari params, bukan unitTokens[0]
-    });
-
-    let getIP;
-    const commandDesc = 'volume_down';
-
-    if (!checkunit) {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.token = ?
-            `, {
-        replacements: [commandDesc, token],
-        type: sequelize.QueryTypes.SELECT,
-      });
-    } else {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.id = ?
-            `, {
-        replacements: [commandDesc, checkunit.unitid],
-        type: sequelize.QueryTypes.SELECT
-      });
-    }
-
-    // Penanganan Data Kosong
-    if (!getIP || getIP.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Unit atau perintah 'volume_down' tidak ditemukan."
-      });
-    }
-
-    const unitData = getIP[0];
-    const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
-
-    return res.json({
-      success: true,
-      message: "Perintah Volume Down berhasil dikirim.",
-      adb_result: adbResult
-    });
-
-  } catch (error) {
-    console.error("Error pada /tv/:token/volume_down:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan internal saat menurunkan volume.",
-      error: error.message
-    });
-  }
-});
-
-// Keycode 164: VOLUME_MUTE
-router.get("/tv/:token/mute", verifyToken, async (req, res) => {
-  const { token } = req.params;
-
-  try {
-    // PERHATIAN: Perbaikan token pada findOne
-    const checkunit = await history_units.findOne({
-      where: { token: token } // Menggunakan 'token' dari params, bukan unitTokens[0]
-    });
-
-    let getIP;
-    const commandDesc = 'volume_mute';
-
-    if (!checkunit) {
-      // PERHATIAN: Hapus const yang berlebihan di sini
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.token = ?
-            `, {
-        replacements: [commandDesc, token],
-        type: sequelize.QueryTypes.SELECT,
-      });
-    } else {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.id = ?
-            `, {
-        replacements: [commandDesc, checkunit.unitid],
-        type: sequelize.QueryTypes.SELECT
-      });
-    }
-
-    // Penanganan Data Kosong
-    if (!getIP || getIP.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Unit atau perintah 'volume_mute' tidak ditemukan."
-      });
-    }
-
-    const unitData = getIP[0];
-    const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
-
-    return res.json({
-      success: true,
-      message: "Perintah Mute berhasil dikirim.",
-      adb_result: adbResult
-    });
-
-  } catch (error) {
-    console.error("Error pada /tv/:token/mute:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan internal saat memproses perintah mute.",
-      error: error.message
-    });
-  }
-});
-
-// Endpoint untuk cek TV yang terhubung
-router.get('/tv/connected', verifyToken, (req, res) => {
-  const tvConnections = req.app.locals.tvConnections;
-  
-  if (!tvConnections) {
-    return res.json({ 
-      success: true,
-      connectedTVs: [],
-      count: 0
-    });
-  }
-
-  const connectedTVs = [];
-  tvConnections.forEach((ws, tvId) => {
-    connectedTVs.push({
-      tvId,
-      connected: ws.readyState === WebSocket.OPEN,
-      readyState: ws.readyState
-    });
-  });
-
-  res.json({ 
-    success: true,
-    connectedTVs,
-    count: connectedTVs.length
-  });
 });
 
 // ✅ Kirim perintah ke TV tertentu via WebSocket
 router.post('/tv/command', verifyToken, (req, res) => {
-  const { tvId, command, target } = req.body;
+  const { tvId, command } = req.body;
 
   if (!tvId || !command) {
     return res.status(400).json({ 
@@ -666,7 +503,7 @@ router.post('/tv/command', verifyToken, (req, res) => {
   }
 
   try {
-    ws.send(JSON.stringify({ type: 'command', command, target }));
+    ws.send(JSON.stringify({ type: 'command', tvId, command }));
     console.log(`📤 Sent command ${command} to ${tvId}`);
     logInfo(`TV Command sent`, { tvId, command, userId: req.user?.userId });
 
@@ -772,199 +609,6 @@ router.get('/tv/status/:tvId', verifyToken, (req, res) => {
   });
 });
 
-// Keycode 24: VOLUME_UP
-router.get("/tv/:token/volume_up", verifyToken, async (req, res) => {
-  const { token } = req.params;
-
-  try {
-    const checkunit = await history_units.findOne({
-      where: { token: token }
-    });
-
-    let getIP;
-    const commandDesc = 'volume_up';
-
-    if (!checkunit) {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.token = ?
-            `, {
-        replacements: [commandDesc, token], // Menggunakan commandDesc
-        type: sequelize.QueryTypes.SELECT,
-      });
-    } else {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.id = ?
-            `, {
-        replacements: [commandDesc, checkunit.unitid], // Menggunakan commandDesc
-        type: sequelize.QueryTypes.SELECT
-      });
-    }
-
-    // Penanganan Data Kosong
-    if (!getIP || getIP.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Unit atau perintah 'volume_up' tidak ditemukan."
-      });
-    }
-
-    const unitData = getIP[0];
-
-    // Eksekusi ADB dan Menunggu Hasil
-    const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
-
-    // Response Sukses
-    return res.json({
-      success: true,
-      message: "Perintah Volume Up berhasil dikirim.",
-      adb_result: adbResult
-    });
-
-  } catch (error) {
-    console.error("Error pada /tv/:token/volume_up:", error);
-
-    // Response Gagal
-    return res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan internal saat menaikkan volume.",
-      error: error.message
-    });
-  }
-});
-
-// Keycode 25: VOLUME_DOWN
-router.get("/tv/:token/volume_down", verifyToken, async (req, res) => {
-  const { token } = req.params;
-
-  try {
-    // PERHATIAN: Perbaikan token pada findOne
-    const checkunit = await history_units.findOne({
-      where: { token: token } // Menggunakan 'token' dari params, bukan unitTokens[0]
-    });
-
-    let getIP;
-    const commandDesc = 'volume_down';
-
-    if (!checkunit) {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.token = ?
-            `, {
-        replacements: [commandDesc, token],
-        type: sequelize.QueryTypes.SELECT,
-      });
-    } else {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.id = ?
-            `, {
-        replacements: [commandDesc, checkunit.unitid],
-        type: sequelize.QueryTypes.SELECT
-      });
-    }
-
-    // Penanganan Data Kosong
-    if (!getIP || getIP.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Unit atau perintah 'volume_down' tidak ditemukan."
-      });
-    }
-
-    const unitData = getIP[0];
-    const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
-
-    return res.json({
-      success: true,
-      message: "Perintah Volume Down berhasil dikirim.",
-      adb_result: adbResult
-    });
-
-  } catch (error) {
-    console.error("Error pada /tv/:token/volume_down:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan internal saat menurunkan volume.",
-      error: error.message
-    });
-  }
-});
-
-// Keycode 164: VOLUME_MUTE
-router.get("/tv/:token/mute", verifyToken, async (req, res) => {
-  const { token } = req.params;
-
-  try {
-    // PERHATIAN: Perbaikan token pada findOne
-    const checkunit = await history_units.findOne({
-      where: { token: token } // Menggunakan 'token' dari params, bukan unitTokens[0]
-    });
-
-    let getIP;
-    const commandDesc = 'volume_mute';
-
-    if (!checkunit) {
-      // PERHATIAN: Hapus const yang berlebihan di sini
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.token = ?
-            `, {
-        replacements: [commandDesc, token],
-        type: sequelize.QueryTypes.SELECT,
-      });
-    } else {
-      getIP = await sequelize.query(`
-                SELECT b.ip_address, c.command FROM units u 
-                JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = ? AND u.id = ?
-            `, {
-        replacements: [commandDesc, checkunit.unitid],
-        type: sequelize.QueryTypes.SELECT
-      });
-    }
-
-    // Penanganan Data Kosong
-    if (!getIP || getIP.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Unit atau perintah 'volume_mute' tidak ditemukan."
-      });
-    }
-
-    const unitData = getIP[0];
-    const adbResult = await executeAdbControl(unitData.ip_address, unitData.command);
-
-    return res.json({
-      success: true,
-      message: "Perintah Mute berhasil dikirim.",
-      adb_result: adbResult
-    });
-
-  } catch (error) {
-    console.error("Error pada /tv/:token/mute:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan internal saat memproses perintah mute.",
-      error: error.message
-    });
-  }
-});
-
 // Register TV endpoint
 router.post('/registertv', async (req, res) => {
   try {
@@ -1011,62 +655,5 @@ console.log(req.body);
     });
   }
 });
-
-router.post('/heartbeat', async (req, res) => {
-  try {
-    const { tv_id, model, ip, modeltv, cabangid } = req.body;
-
-    // Validasi input
-    if (!tv_id || !ip || !modeltv || !cabangid) {
-      return res.status(400).json({
-        success: false,
-        message: 'tv_id, modeltv, ip, and cabangid are required'
-      });
-    }
-
-    // Cek apakah TV sudah terdaftar
-    let existingTv = await Brandtv.findOne({ where: { tv_id } });
-
-    if (existingTv) {
-      // ✅ Update IP address jika berubah (heartbeat update)
-      if (existingTv.ip_address !== ip) {
-        await existingTv.update({ ip_address: ip });
-      }
-
-      // Tambahkan log heartbeat time (optional)
-      await existingTv.update({ last_seen: new Date() });
-
-      return res.json({
-        success: true,
-        message: '✅ TV heartbeat received (already registered)',
-        data: existingTv
-      });
-    }
-
-    // ✅ TV belum ada → daftarkan baru
-    const newTv = await Brandtv.create({
-      name: modeltv,
-      codetvid: 1,
-      cabangid: parseInt(cabangid),
-      tv_id: tv_id,
-      ip_address: ip,
-      last_seen: new Date()
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: '🆕 TV registered successfully',
-      data: newTv
-    });
-  } catch (error) {
-    console.error('❌ Error in /heartbeat:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal server error',
-      error: error.message
-    });
-  }
-});
-
 
 module.exports = router;
