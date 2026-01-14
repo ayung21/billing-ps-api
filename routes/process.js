@@ -479,7 +479,7 @@ router.post('/tv/command', verifyToken, (req, res) => {
   if (!tvId || !command) {
     return res.status(400).json({ 
       success: false,
-      message: 'tvId and command are required' 
+      message: 'tvId and command are required'
     });
   }
 

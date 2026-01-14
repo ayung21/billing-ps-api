@@ -62,7 +62,7 @@ router.get('/', verifyToken, verifyRole([PERMISSIONS.VIEW_UNIT_RENTAL]), async (
         includeOptions.push({
           model: Brandtv,
           as: 'brandtv',
-          attributes: ['id', 'name', 'codetvid', 'ip_address'], // UPDATE: ip_address
+          attributes: ['id', 'name', 'codetvid', 'tv_id', 'ip_address'], // UPDATE: ip_address
           required: false // LEFT JOIN
         });
       }
@@ -81,7 +81,7 @@ router.get('/', verifyToken, verifyRole([PERMISSIONS.VIEW_UNIT_RENTAL]), async (
     const units = await Unit.findAndCountAll({
       where: whereClause,
       include: includeOptions,
-      attributes: ['id', 'name', 'description', 'brandtvid', 'cabangid', 'price', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
+      attributes: ['id', 'name', 'description', 'brandtvid' , 'cabangid', 'price', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
       limit: parseInt(limit),
       offset: parseInt(offset),
       order: [['id', 'ASC']]
