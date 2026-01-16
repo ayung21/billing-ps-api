@@ -510,11 +510,13 @@ router.get("/sleep", async (req, res) => {
     });
   }
 });
+// ...existing code...
 
-// ✅ Kirim perintah ke TV tertentu via WebSocket
-router.post('/tv/command', verifyToken, (req, res) => {
-  const { tvId, command } = req.body;
+// ✅ IMPROVED: Kirim perintah ke TV tertentu via WebSocket
+router.post('/tv/command', verifyToken, async (req, res) => {
+  const { tvId, command, target, waitResponse } = req.body;
 
+  // Validation
   if (!tvId || !command) {
     return res.status(400).json({ 
       success: false,
@@ -522,17 +524,19 @@ router.post('/tv/command', verifyToken, (req, res) => {
     });
   }
 
-  // Ambil tvConnections dari app.locals
+  // Get WebSocket connections
   const tvConnections = req.app.locals.tvConnections;
+  const tvResponses = req.app.locals.tvResponses;
   
-  if (!tvConnections) {
+  if (!tvConnections || !tvResponses) {
     return res.status(500).json({ 
       success: false,
-      message: 'WebSocket connections not available' 
+      message: 'WebSocket services not available' 
     });
   }
 
   const ws = tvConnections.get(tvId);
+  
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     return res.status(404).json({ 
       success: false,
@@ -542,28 +546,101 @@ router.post('/tv/command', verifyToken, (req, res) => {
   }
 
   try {
-    const tester = ws.send(JSON.stringify({ type: 'command', tvId, command }));
-    console.log(`tester`, tester);
-    logInfo(`TV Command sent`, { tvId, command, userId: req.user?.userId });
+    // ✅ Gunakan helper function sendTVCommand
+    await sendTVCommand(ws, tvId, command, target || 'manual_command');
+    
+    logInfo('TV Command sent', { 
+      tvId, 
+      command, 
+      target: target || 'manual_command',
+      userId: req.user?.userId 
+    });
 
+    // ✅ Optional: Tunggu response dari TV
+    if (waitResponse === true || waitResponse === 'true') {
+      console.log(`⏳ Waiting for response from TV ${tvId}...`);
+      
+      const timeout = parseInt(req.body.timeout) || 5000; // Default 5 detik
+      const tvResponse = await waitForTVResponse(
+        tvResponses, 
+        tvId, 
+        command, 
+        timeout
+      );
+
+      if (tvResponse) {
+        // Clear response setelah digunakan
+        tvResponses.delete(tvId);
+
+        if (tvResponse.status === 'success') {
+          return res.json({
+            success: true,
+            message: `Command ${command} executed successfully on ${tvId}`,
+            data: {
+              tvId,
+              command,
+              target: target || 'manual_command',
+              response: {
+                status: tvResponse.status,
+                message: tvResponse.message,
+                timestamp: tvResponse.timestamp
+              }
+            }
+          });
+        } else {
+          return res.status(503).json({
+            success: false,
+            message: `Command execution failed: ${tvResponse.message || tvResponse.error}`,
+            data: {
+              tvId,
+              command,
+              response: {
+                status: tvResponse.status,
+                error: tvResponse.error,
+                timestamp: tvResponse.timestamp
+              }
+            }
+          });
+        }
+      } else {
+        // Timeout
+        return res.status(408).json({
+          success: false,
+          message: `TV ${tvId} tidak merespon dalam ${timeout}ms`,
+          data: {
+            tvId,
+            command,
+            timeout: true
+          }
+        });
+      }
+    }
+
+    // ✅ Tanpa tunggu response (fire and forget)
     res.json({ 
       success: true, 
       message: `Command ${command} sent to ${tvId}`,
-      data: { tvId, command }
+      data: { 
+        tvId, 
+        command,
+        target: target || 'manual_command',
+        note: 'Command sent without waiting for response'
+      }
     });
+
   } catch (error) {
-    console.error(`Error sending command to ${tvId}:`, error);
-    logError(error, req);
+    console.error(`❌ Error sending command to ${tvId}:`, error);
+    logError(error, req, { tvId, command });
     
     res.status(500).json({
       success: false,
-      message: 'Failed to send command to TV',
+      message: error.message || 'Failed to send command to TV',
       error: error.message
     });
   }
 });
 
-// ✅ Lihat semua TV yang aktif
+// ✅ IMPROVED: Lihat semua TV yang aktif
 router.get('/tv/active', verifyToken, (req, res) => {
   try {
     const tvConnections = req.app.locals.tvConnections;
@@ -581,11 +658,12 @@ router.get('/tv/active', verifyToken, (req, res) => {
 
     for (const [tvId, ws] of tvConnections.entries()) {
       const isConnected = ws.readyState === WebSocket.OPEN;
-      const status = tvStatus[tvId];
+      const status = tvStatus?.[tvId];
       
       connectedTVs.push({
         id: tvId,
         connected: isConnected,
+        state: isConnected ? 'ONLINE' : 'OFFLINE',
         lastPing: status?.lastPing || null,
         ipAddress: status?.ipAddress || null,
         lastSeenSecondsAgo: status?.lastPing ? 
@@ -593,19 +671,28 @@ router.get('/tv/active', verifyToken, (req, res) => {
       });
     }
 
+    // Sort by connected status
+    connectedTVs.sort((a, b) => {
+      if (a.connected === b.connected) {
+        return (a.lastSeenSecondsAgo || 0) - (b.lastSeenSecondsAgo || 0);
+      }
+      return b.connected - a.connected;
+    });
+
     res.json({ 
       success: true,
       data: {
         connectedTVs,
         summary: {
           total: connectedTVs.length,
-          connected: connectedTVs.filter(tv => tv.connected).length,
-          disconnected: connectedTVs.filter(tv => !tv.connected).length
+          online: connectedTVs.filter(tv => tv.connected).length,
+          offline: connectedTVs.filter(tv => !tv.connected).length
         }
       }
     });
+
   } catch (error) {
-    console.error('Error getting active TVs:', error);
+    console.error('❌ Error getting active TVs:', error);
     logError(error, req);
     
     res.status(500).json({
@@ -616,36 +703,68 @@ router.get('/tv/active', verifyToken, (req, res) => {
   }
 });
 
-// ✅ TV status detail
+// ✅ IMPROVED: TV status detail
 router.get('/tv/status/:tvId', verifyToken, (req, res) => {
-  const { tvId } = req.params;
-  const tvConnections = req.app.locals.tvConnections;
-  const tvStatus = req.app.locals.tvStatus;
-  
-  const ws = tvConnections?.get(tvId);
-  const status = tvStatus?.[tvId];
-  const now = new Date();
-  
-  if (!ws && !status) {
-    return res.status(404).json({
+  try {
+    const { tvId } = req.params;
+    const tvConnections = req.app.locals.tvConnections;
+    const tvStatus = req.app.locals.tvStatus;
+    const tvResponses = req.app.locals.tvResponses;
+    
+    const ws = tvConnections?.get(tvId);
+    const status = tvStatus?.[tvId];
+    const lastResponse = tvResponses?.get(tvId);
+    const now = new Date();
+    
+    if (!ws && !status) {
+      return res.status(404).json({
+        success: false,
+        message: 'TV not found',
+        tvId
+      });
+    }
+
+    const isOnline = ws && ws.readyState === WebSocket.OPEN;
+    const lastSeenSeconds = status?.lastPing ? 
+      Math.floor((now - status.lastPing) / 1000) : null;
+
+    res.json({
+      success: true,
+      data: {
+        tvId,
+        connected: isOnline,
+        status: isOnline ? 'ONLINE' : 'OFFLINE',
+        lastPing: status?.lastPing || null,
+        lastPingISO: status?.lastPing ? status.lastPing.toISOString() : null,
+        lastSeenSecondsAgo: lastSeenSeconds,
+        lastSeenHumanReadable: lastSeenSeconds ? 
+          (lastSeenSeconds < 60 ? `${lastSeenSeconds}s ago` : 
+           lastSeenSeconds < 3600 ? `${Math.floor(lastSeenSeconds / 60)}m ago` : 
+           `${Math.floor(lastSeenSeconds / 3600)}h ago`) : null,
+        ipAddress: status?.ipAddress || null,
+        lastCommand: lastResponse ? {
+          command: lastResponse.command,
+          status: lastResponse.status,
+          timestamp: lastResponse.timestamp
+        } : null,
+        websocket: {
+          readyState: ws?.readyState,
+          readyStateText: ws ? 
+            (['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][ws.readyState]) : 'N/A'
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting TV status:', error);
+    logError(error, req);
+    
+    res.status(500).json({
       success: false,
-      message: 'TV not found',
-      tvId
+      message: 'Failed to get TV status',
+      error: error.message
     });
   }
-
-  res.json({
-    success: true,
-    data: {
-      tvId,
-      connected: ws ? ws.readyState === WebSocket.OPEN : false,
-      lastPing: status?.lastPing || null,
-      ipAddress: status?.ipAddress || null,
-      lastSeenSecondsAgo: status?.lastPing ? 
-        Math.floor((now - status.lastPing) / 1000) : null,
-      status: ws && ws.readyState === WebSocket.OPEN ? 'ONLINE' : 'OFFLINE'
-    }
-  });
 });
 
 // Register TV endpoint
