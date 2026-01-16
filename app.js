@@ -1,449 +1,242 @@
 const express = require('express');
-const cors = require('cors');
-const dotenv = require('dotenv');
 const http = require('http');
 const WebSocket = require('ws');
-const { testConnection, sequelize } = require('./config/database');
-const { logError, logInfo, requestLogger } = require('./middleware/logger');
-const tvStatusLogger = require('./middleware/tvStatusLogger');
-
-// Load environment variables
-dotenv.config();
-
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server, path: '/ws' });
 
-// ============================
-// 📊 TV DATA STORAGE
-// ============================
-const tvConnections = new Map(); // { tv_id: WebSocket }
-const tvStatus = new Map(); // { tv_id: { lastPing, ipAddress, userAgent, status } }
-const tvResponses = new Map(); // { tv_id: { lastResponse, command, status, message, data } }
+// ✅ Initialize WebSocket dengan proper config
+const wss = new WebSocket.Server({ 
+  server,
+  clientTracking: true, // ✅ Track clients
+  perMessageDeflate: false // ✅ Disable compression untuk stability
+});
 
-const TIMEOUT_MS = 3 * 60 * 1000; // 3 menit timeout
+// ✅ Global storage untuk TV connections
+app.locals.tvConnections = new Map();
+app.locals.tvResponses = new Map();
+app.locals.tvStatus = {};
 
-// ============================
-// 🔌 WEBSOCKET HANDLER
-// ============================
-wss.on('connection', (ws, req) => {
-  const clientIp = req.socket.remoteAddress;
-  let tv_id = null;
+// ✅ Cleanup function untuk remove stale connections
+const cleanupTVConnection = (tvId) => {
+  console.log(`🧹 Cleaning up TV ${tvId}`);
   
-  console.log(`🔌 New WebSocket connection from ${clientIp}`);
-  logInfo('WebSocket connection established', { clientIp });
+  const existingWs = app.locals.tvConnections.get(tvId);
+  if (existingWs) {
+    try {
+      existingWs.terminate(); // ✅ Force close old connection
+    } catch (error) {
+      console.error(`Error terminating old connection for ${tvId}:`, error);
+    }
+  }
+  
+  app.locals.tvConnections.delete(tvId);
+  app.locals.tvResponses.delete(tvId);
+  
+  if (app.locals.tvStatus[tvId]) {
+    delete app.locals.tvStatus[tvId];
+  }
+};
 
-  ws.isAlive = true;
+// ✅ Ping interval untuk keep-alive
+const PING_INTERVAL = 30000; // 30 detik
+const PING_TIMEOUT = 10000; // 10 detik
 
-  // ============================
-  // 📨 MESSAGE HANDLER
-  // ============================
-  ws.on('message', async (message) => {
+wss.on('connection', (ws, req) => {
+  // ✅ Parse TV ID dari URL
+  const urlParams = new URLSearchParams(req.url.split('?')[1]);
+  const tvId = urlParams.get('tv_id');
+  const ipAddress = req.socket.remoteAddress;
+
+  if (!tvId) {
+    console.error('❌ Connection rejected: No tv_id provided');
+    ws.close(1008, 'tv_id required');
+    return;
+  }
+
+  console.log(`📡 TV ${tvId} connecting from ${ipAddress}...`);
+
+  // ✅ Cleanup existing connection dulu sebelum add yang baru
+  if (app.locals.tvConnections.has(tvId)) {
+    console.warn(`⚠️ TV ${tvId} already connected, replacing old connection...`);
+    cleanupTVConnection(tvId);
+  }
+
+  // ✅ Store connection
+  app.locals.tvConnections.set(tvId, ws);
+  app.locals.tvStatus[tvId] = {
+    lastPing: new Date(),
+    ipAddress: ipAddress,
+    connected: true
+  };
+
+  console.log(`✅ TV ${tvId} connected successfully`);
+
+  // ✅ Setup ping/pong untuk keep-alive
+  let pingTimer = null;
+  let pongReceived = true;
+
+  const startPingInterval = () => {
+    // ✅ Clear existing timer
+    if (pingTimer) {
+      clearInterval(pingTimer);
+    }
+
+    pingTimer = setInterval(() => {
+      if (!pongReceived) {
+        console.warn(`⚠️ TV ${tvId} tidak merespon pong, closing connection...`);
+        ws.terminate();
+        return;
+      }
+
+      if (ws.readyState === WebSocket.OPEN) {
+        pongReceived = false;
+        
+        try {
+          ws.ping();
+          console.log(`🏓 Ping sent to TV ${tvId}`);
+        } catch (error) {
+          console.error(`❌ Error sending ping to TV ${tvId}:`, error);
+        }
+      }
+    }, PING_INTERVAL);
+  };
+
+  // ✅ Start ping interval
+  startPingInterval();
+
+  // ✅ Handle pong response
+  ws.on('pong', () => {
+    pongReceived = true;
+    console.log(`🏓 Pong received from TV ${tvId}`);
+    
+    // ✅ Update last ping time
+    if (app.locals.tvStatus[tvId]) {
+      app.locals.tvStatus[tvId].lastPing = new Date();
+    }
+  });
+
+  // ✅ Handle messages dari TV
+  ws.on('message', (message) => {
     try {
       const data = JSON.parse(message.toString());
-      const now = new Date();
+      console.log(`📨 Message from TV ${tvId}:`, data);
 
-      console.log(`📩 Message received:`, data);
-
-      // ============================
-      // 1️⃣ REGISTER - TV mendaftar pertama kali
-      // ============================
-      if (data.type === 'register') {
-        tv_id = data.tv_id || data.id;
-        
-        if (!tv_id) {
-          console.error('❌ Register failed: no tv_id provided');
-          ws.send(JSON.stringify({
-            type: 'error',
-            message: 'tv_id is required for registration'
-          }));
-          return;
-        }
-
-        // Simpan koneksi WebSocket
-        tvConnections.set(tv_id, ws);
-        ws.tv_id = tv_id; // Attach tv_id ke WebSocket object
-
-        // Update status TV
-        tvStatus.set(tv_id, {
-          lastPing: now,
-          ipAddress: data.ip || clientIp,
-          userAgent: data.model || 'Unknown',
-          modelTv: data.modeltv,
-          cabangid: data.cabangid,
-          status: 'online',
-          connectedAt: now
+      // ✅ Handle response dari TV
+      if (data.type === 'response') {
+        app.locals.tvResponses.set(tvId, {
+          command: data.command,
+          status: data.status,
+          message: data.message,
+          error: data.error,
+          timestamp: data.timestamp || new Date().toISOString()
         });
-
-        console.log(`✅ TV Registered: ${tv_id} (${data.modeltv})`);
-        logInfo('TV registered via WebSocket', { 
-          tv_id: tv_id, 
-          model: data.model,
-          modeltv: data.modeltv,
-          ip: data.ip,
-          cabangid: data.cabangid 
-        });
-        tvStatusLogger.logTVRegistered(tv_id, data.modeltv, data.ip);
-
-        // Simpan ke database
-        try {
-          const initModels = require('./models/init-models');
-          const models = initModels(sequelize);
-          const Brandtv = models.brandtv;
-
-          const existingTv = await Brandtv.findOne({ where: { tv_id: tv_id } });
-
-          if (!existingTv && data.modeltv && data.cabangid) {
-            await Brandtv.create({
-              name: data.modeltv,
-              codetvid: 1,
-              cabangid: parseInt(data.cabangid),
-              tv_id: tv_id,
-              ip_address: data.ip || clientIp
-            });
-            console.log(`💾 TV saved to database: ${tv_id}`);
-            logInfo('TV saved to database', { tv_id: tv_id });
-          }
-        } catch (error) {
-          console.error('❌ Error saving TV to database:', error);
-          logError(error);
-        }
-
-        // Kirim konfirmasi registrasi
-        ws.send(JSON.stringify({
-          type: 'register_ack',
-          status: 'success',
-          tv_id: tv_id,
-          message: 'Registration successful',
-          timestamp: now.toISOString()
-        }));
+        console.log(`✅ Response from TV ${tvId} saved`);
       }
 
-      // ============================
-      // 2️⃣ PING - TV mengirim heartbeat
-      // ============================
-      else if (data.type === 'ping') {
-        tv_id = data.tv_id || ws.tv_id;
-        
-        if (!tv_id) {
-          console.warn('⚠️ Ping without tv_id');
-          return;
-        }
-
-        ws.isAlive = true;
-
-        // Check jika TV sebelumnya offline
-        const previousStatus = tvStatus.get(tv_id);
-        const wasOffline = !previousStatus || 
-                          (now - previousStatus.lastPing) >= TIMEOUT_MS;
-
-        // Update status
-        tvStatus.set(tv_id, {
-          ...previousStatus,
-          lastPing: now,
-          ipAddress: data.ip || clientIp,
-          status: 'online'
-        });
-
-        console.log(`📶 Ping from TV: ${tv_id}`);
-        tvStatusLogger.logPing(tv_id, data.ip || clientIp, 'WebSocket');
-
-        if (wasOffline) {
-          console.log(`✅ TV ${tv_id} came back online`);
-          tvStatusLogger.logTVOnline(tv_id);
-        }
-
-        // Kirim pong
-        ws.send(JSON.stringify({
+      // ✅ Handle ping dari TV client (optional)
+      if (data.type === 'ping') {
+        const pongPayload = {
           type: 'pong',
-          tv_id: tv_id,
-          time: now.toISOString(),
-          status: 'ok'
-        }));
+          tv_id: tvId,
+          timestamp: new Date().toISOString()
+        };
+        ws.send(JSON.stringify(pongPayload));
+        console.log(`🏓 Pong sent to TV ${tvId}`);
       }
 
-      // ============================
-      // 3️⃣ COMMAND_RESPONSE - TV mengirim hasil eksekusi command
-      // ============================
-      else if (data.type === 'command_response') {
-        tv_id = data.tv_id || ws.tv_id;
-
-        if (!tv_id) {
-          console.error('❌ Command response without tv_id');
-          return;
-        }
-
-        console.log(`📥 Command Response from TV ${tv_id}:`, {
-          command: data.command,
-          status: data.status,
-          message: data.message
-        });
-
-        // Simpan response
-        tvResponses.set(tv_id, {
-          lastResponse: now,
-          tv_id: tv_id,
-          command: data.command,
-          status: data.status,
-          message: data.message,
-          error: data.error || null,
-          details: data.details || null,
-          timestamp: data.timestamp
-        });
-
-        logInfo('Command response received from TV', {
-          tv_id: tv_id,
-          command: data.command,
-          status: data.status,
-          message: data.message
-        });
-
-        tvStatusLogger.logCommandResponse(
-          tv_id, 
-          data.command, 
-          data.status, 
-          data.message
-        );
-
-        // Kirim acknowledgment
-        ws.send(JSON.stringify({
-          type: 'response_ack',
-          tv_id: tv_id,
-          received: true,
-          timestamp: now.toISOString()
-        }));
-      }
-
-      // ============================
-      // 4️⃣ ERROR - TV mengirim error message
-      // ============================
-      else if (data.type === 'error') {
-        tv_id = data.tv_id || ws.tv_id;
-
-        console.error(`❌ Error from TV ${tv_id}:`, data.message);
-        logError(new Error(`TV Error: ${data.message}`), null, { 
-          tv_id: tv_id,
-          error_details: data
-        });
-
-        // Simpan error sebagai response
-        tvResponses.set(tv_id, {
-          lastResponse: now,
-          tv_id: tv_id,
-          command: data.command || 'unknown',
-          status: 'error',
-          message: data.message,
-          error: data.error || data.message,
-          timestamp: now.toISOString()
-        });
-      }
-
-      // ============================
-      // 5️⃣ STATUS_UPDATE - TV mengirim update status
-      // ============================
-      else if (data.type === 'status_update') {
-        tv_id = data.tv_id || ws.tv_id;
-
-        if (!tv_id) {
-          console.warn('⚠️ Status update without tv_id');
-          return;
-        }
-
-        console.log(`📊 Status Update from TV ${tv_id}:`, data.status);
-        
-        // Update status TV
-        const currentStatus = tvStatus.get(tv_id) || {};
-        tvStatus.set(tv_id, {
-          ...currentStatus,
-          lastPing: now,
-          currentStatus: data.status,
-          details: data.details,
-          updated: now
-        });
-
-        logInfo('TV status update received', {
-          tv_id: tv_id,
-          status: data.status,
-          details: data.details
-        });
-      }
-
-      // ============================
-      // 6️⃣ CONFIRM - TV mengirim konfirmasi command
-      // ============================
-      else if (data.type === 'confirm') {
-        tv_id = data.tv_id || ws.tv_id; // ✅ TV kirim tv_id (snake_case)
-
-        if (!tv_id) {
-          console.error('❌ Confirm without tv_id');
-          return;
-        }
-
-        console.log(`📥 Command Confirmation from TV ${tv_id}:`, {
-          command: data.command,
-          status: data.status,
-          error: data.error
-        });
-
-        // Simpan response
-        tvResponses.set(tv_id, {
-          lastResponse: now,
-          tv_id: tv_id,
-          command: data.command,
-          status: data.status, // "success" atau "failed"
-          message: data.status === 'success' ? 'Command executed successfully' : 'Command execution failed',
-          error: data.error || null,
-          timestamp: data.time || now.toISOString()
-        });
-
-        console.log(`💾 Response saved for TV ${tv_id}, command ${data.command}, status ${data.status}`);
-
-        logInfo('Command confirmation received from TV', {
-          tv_id: tv_id,
-          command: data.command,
-          status: data.status,
-          error: data.error
-        });
-
-        tvStatusLogger.logCommandResponse(
-          tv_id, 
-          data.command, 
-          data.status, 
-          data.error || 'Success'
-        );
-
-        // Kirim acknowledgment
-        ws.send(JSON.stringify({
-          type: 'confirm_ack',
-          tv_id: tv_id,
-          received: true,
-          timestamp: now.toISOString()
-        }));
-      }
-
-      // ============================
-      // 7️⃣ UNKNOWN MESSAGE TYPE
-      // ============================
-      else {
-        console.log(`⚠️ Unknown message type: ${data.type} from ${tv_id || clientIp}`);
-        logInfo('Unknown WebSocket message type', { type: data.type, data });
+      // ✅ Update last ping time
+      if (app.locals.tvStatus[tvId]) {
+        app.locals.tvStatus[tvId].lastPing = new Date();
       }
 
     } catch (error) {
-      console.error('❌ Error processing WebSocket message:', error);
-      logError(error);
-      
-      ws.send(JSON.stringify({
-        type: 'error',
-        message: 'Invalid message format',
-        error: error.message
-      }));
+      console.error(`❌ Error parsing message from TV ${tvId}:`, error);
+      console.error('Raw message:', message.toString());
     }
   });
 
-  // ============================
-  // 🏓 PONG HANDLER (for heartbeat)
-  // ============================
-  ws.on('pong', () => {
-    ws.isAlive = true;
-  });
-
-  // ============================
-  // ❌ CLOSE HANDLER
-  // ============================
-  ws.on('close', (code, reason) => {
-    tv_id = ws.tv_id;
-    
-    console.log(`❌ WebSocket closed for TV: ${tv_id || 'unknown'} (code: ${code}, reason: ${reason || 'none'})`);
-    logInfo('WebSocket connection closed', { 
-      tv_id: tv_id, 
-      code, 
-      reason: reason.toString() 
-    });
-
-    if (tv_id) {
-      tvConnections.delete(tv_id);
-      
-      // Update status ke offline
-      const currentStatus = tvStatus.get(tv_id);
-      if (currentStatus) {
-        tvStatus.set(tv_id, {
-          ...currentStatus,
-          status: 'offline',
-          disconnectedAt: new Date()
-        });
-      }
-      
-      tvStatusLogger.logTVOffline(tv_id);
-    }
-  });
-
-  // ============================
-  // ⚠️ ERROR HANDLER
-  // ============================
+  // ✅ Handle errors
   ws.on('error', (error) => {
-    console.error(`⚠️ WebSocket error for TV: ${ws.tv_id || 'unknown'}`, error);
-    logError(error, null, { tv_id: ws.tv_id });
+    console.error(`❌ WebSocket error for TV ${tvId}:`, error);
+    
+    // ✅ Jangan auto-reconnect di sini, biar TV client yang handle
   });
 
-  // ============================
-  // 👋 WELCOME MESSAGE
-  // ============================
-  ws.send(JSON.stringify({
-    type: 'welcome',
-    message: 'Connected to Billing PS Server',
-    timestamp: new Date().toISOString(),
-    server_version: '1.0.0'
-  }));
+  // ✅ Handle disconnect
+  ws.on('close', (code, reason) => {
+    console.log(`📡 TV ${tvId} disconnected. Code: ${code}, Reason: ${reason}`);
+    
+    // ✅ Cleanup
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+    
+    // ✅ Remove dari storage
+    cleanupTVConnection(tvId);
+    
+    console.log(`🧹 TV ${tvId} cleaned up successfully`);
+  });
+
+  // ✅ Send welcome message
+  const welcomePayload = {
+    type: 'connected',
+    tv_id: tvId,
+    message: 'Connected to server successfully',
+    timestamp: new Date().toISOString()
+  };
+
+  try {
+    ws.send(JSON.stringify(welcomePayload));
+    console.log(`👋 Welcome message sent to TV ${tvId}`);
+  } catch (error) {
+    console.error(`❌ Error sending welcome message to TV ${tvId}:`, error);
+  }
 });
 
-// ============================
-// 🕐 HEARTBEAT INTERVAL
-// ============================
-const heartbeatInterval = setInterval(() => {
-  wss.clients.forEach((ws) => {
-    if (!ws.isAlive) {
-      console.log(`💀 Terminating inactive connection: ${ws.tv_id || 'unknown'}`);
-      return ws.terminate();
-    }
-    
-    ws.isAlive = false;
-    ws.ping();
-  });
-}, 30000); // 30 detik
-
-// ============================
-// 🧹 CLEANUP OFFLINE TVs
-// ============================
-const cleanupInterval = setInterval(() => {
+// ✅ Cleanup stale connections periodically
+setInterval(() => {
   const now = new Date();
-  let offlineCount = 0;
+  const STALE_THRESHOLD = 60000; // 60 detik
 
-  for (const [tv_id, status] of tvStatus.entries()) {
+  for (const [tvId, status] of Object.entries(app.locals.tvStatus)) {
     const timeSinceLastPing = now - status.lastPing;
     
-    if (timeSinceLastPing >= TIMEOUT_MS && status.status === 'online') {
-      status.status = 'offline';
-      status.disconnectedAt = now;
-      offlineCount++;
-      
-      console.log(`⚠️ TV ${tv_id} marked as offline (no ping for ${Math.floor(timeSinceLastPing / 1000)}s)`);
-      tvStatusLogger.logTVOffline(tv_id);
+    if (timeSinceLastPing > STALE_THRESHOLD) {
+      console.warn(`⚠️ TV ${tvId} stale (${Math.floor(timeSinceLastPing / 1000)}s), cleaning up...`);
+      cleanupTVConnection(tvId);
     }
   }
+}, 30000); // Check setiap 30 detik
 
-  if (offlineCount > 0) {
-    console.log(`🧹 Cleanup: ${offlineCount} TV(s) marked as offline`);
-  }
-}, 60000); // Check setiap 1 menit
+// ✅ Graceful shutdown
+const gracefulShutdown = () => {
+  console.log('🛑 Server shutting down...');
+  
+  // Close all WebSocket connections
+  wss.clients.forEach((ws) => {
+    ws.close(1001, 'Server shutting down');
+  });
+  
+  // Clear all timers
+  app.locals.tvConnections.clear();
+  app.locals.tvResponses.clear();
+  app.locals.tvStatus = {};
+  
+  server.close(() => {
+    console.log('✅ Server closed successfully');
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 
 // ============================
 // 🔧 EXPRESS SETUP
 // ============================
-app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(requestLogger);
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -465,11 +258,6 @@ app.use('/api/member', memberRoutes);
 app.use('/api/transaksi', transaksiRoutes);
 app.use('/api/processcode', _process);
 
-// ✅ Export ke app.locals untuk digunakan di routes
-app.locals.tvConnections = tvConnections;
-app.locals.tvStatus = tvStatus;
-app.locals.tvResponses = tvResponses;
-
 // ============================
 // 🌐 API ENDPOINTS
 // ============================
@@ -481,9 +269,9 @@ app.get('/', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     stats: {
-      connected_tvs: tvConnections.size,
-      registered_tvs: tvStatus.size,
-      responses: tvResponses.size
+      connected_tvs: app.locals.tvConnections.size,
+      registered_tvs: Object.keys(app.locals.tvStatus).length,
+      responses: app.locals.tvResponses.size
     }
   });
 });
@@ -494,16 +282,16 @@ app.get('/ping', (req, res) => {
   const now = new Date();
   const ipAddress = req.ip || req.connection.remoteAddress;
 
-  const currentStatus = tvStatus.get(id);
+  const currentStatus = app.locals.tvStatus[id];
   const wasOffline = !currentStatus || 
-                     (now - currentStatus.lastPing) >= TIMEOUT_MS;
+                     (now - currentStatus.lastPing) >= (3 * 60 * 1000);
 
-  tvStatus.set(id, {
+  app.locals.tvStatus[id] = {
     ...currentStatus,
     lastPing: now,
     ipAddress,
     status: 'online'
-  });
+  };
 
   console.log(`[HTTP PING] TV: ${id}`);
   tvStatusLogger.logPing(id, ipAddress, 'HTTP');
@@ -525,9 +313,9 @@ app.get('/status', (req, res) => {
   const now = new Date();
   const statusList = {};
 
-  for (const [tv_id, status] of tvStatus.entries()) {
+  for (const [tv_id, status] of Object.entries(app.locals.tvStatus)) {
     const timeSinceLastPing = now - status.lastPing;
-    const isOnline = timeSinceLastPing < TIMEOUT_MS;
+    const isOnline = timeSinceLastPing < (3 * 60 * 1000);
 
     statusList[tv_id] = {
       online: isOnline,
@@ -536,7 +324,7 @@ app.get('/status', (req, res) => {
       ipAddress: status.ipAddress,
       modelTv: status.modelTv,
       currentStatus: status.currentStatus,
-      wsConnected: tvConnections.has(tv_id)
+      wsConnected: app.locals.tvConnections.has(tv_id)
     };
   }
 
@@ -549,7 +337,7 @@ app.get('/status', (req, res) => {
       total: totalCount,
       online: onlineCount,
       offline: totalCount - onlineCount,
-      wsConnections: tvConnections.size,
+      wsConnections: app.locals.tvConnections.size,
       checkTime: now.toISOString()
     },
     tvs: statusList
@@ -584,10 +372,8 @@ app.use((err, req, res, next) => {
 // ============================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-  console.log(`🌐 WebSocket at ws://localhost:${PORT}/ws`);
-  console.log(`📡 HTTP API at http://localhost:${PORT}`);
-  logInfo(`Server started with WebSocket support on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📡 WebSocket server ready`);
 });
 
 // ============================
@@ -600,7 +386,7 @@ const shutdown = () => {
   clearInterval(cleanupInterval);
   
   // Close all WebSocket connections
-  tvConnections.forEach((ws, tv_id) => {
+  app.locals.tvConnections.forEach((ws, tv_id) => {
     ws.close(1000, 'Server shutting down');
   });
   
@@ -617,4 +403,4 @@ const shutdown = () => {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-module.exports = app;
+module.exports = { app, server, wss };
