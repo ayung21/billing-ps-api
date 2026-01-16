@@ -1,18 +1,21 @@
 const express = require('express');
+const cors = require('cors');
+const dotenv = require('dotenv');
 const http = require('http');
 const WebSocket = require('ws');
+const { testConnection, sequelize } = require('./config/database');
+const { logError, logInfo, requestLogger } = require('./middleware/logger');
+
+// Load environment variables
+dotenv.config();
+
 const app = express();
 const server = http.createServer(app);
 
-// ✅ Import dependencies yang hilang
-const { sequelize, testConnection } = require('./config/database');
-const { logError, logInfo } = require('./middleware/logger');
-
-// ✅ Initialize WebSocket dengan proper config
+// ✅ Initialize WebSocket dengan path seperti kode lama
 const wss = new WebSocket.Server({ 
-  server,
-  clientTracking: true,
-  perMessageDeflate: false
+  server, 
+  path: '/ws' // ✅ Tambahkan path seperti kode lama
 });
 
 // ✅ Global storage untuk TV connections
@@ -20,7 +23,7 @@ app.locals.tvConnections = new Map();
 app.locals.tvResponses = new Map();
 app.locals.tvStatus = {};
 
-// ✅ Cleanup function untuk remove stale connections
+// ✅ Cleanup function
 const cleanupTVConnection = (tvId) => {
   console.log(`🧹 Cleaning up TV ${tvId}`);
   
@@ -41,156 +44,153 @@ const cleanupTVConnection = (tvId) => {
   }
 };
 
-// ✅ Ping interval untuk keep-alive
-const PING_INTERVAL = 30000; // 30 detik
-const PING_TIMEOUT = 10000; // 10 detik
-
+// ============================
+// 🔌 WEBSOCKET HANDLER
+// ============================
 wss.on('connection', (ws, req) => {
-  // ✅ Parse TV ID dari URL
-  const urlParams = new URLSearchParams(req.url.split('?')[1]);
-  const tvId = urlParams.get('tv_id');
-  const ipAddress = req.socket.remoteAddress;
-
-  if (!tvId) {
-    console.error('❌ Connection rejected: No tv_id provided');
-    ws.close(1008, 'tv_id required');
-    return;
-  }
-
-  console.log(`📡 TV ${tvId} connecting from ${ipAddress}...`);
-
-  // ✅ Cleanup existing connection dulu sebelum add yang baru
-  if (app.locals.tvConnections.has(tvId)) {
-    console.warn(`⚠️ TV ${tvId} already connected, replacing old connection...`);
-    cleanupTVConnection(tvId);
-  }
-
-  // ✅ Store connection
-  app.locals.tvConnections.set(tvId, ws);
-  app.locals.tvStatus[tvId] = {
-    lastPing: new Date(),
-    ipAddress: ipAddress,
-    connected: true
-  };
-
-  console.log(`✅ TV ${tvId} connected successfully`);
-
-  // ✅ Setup ping/pong untuk keep-alive
-  let pingTimer = null;
-  let pongReceived = true;
-
-  const startPingInterval = () => {
-    if (pingTimer) {
-      clearInterval(pingTimer);
-    }
-
-    pingTimer = setInterval(() => {
-      if (!pongReceived) {
-        console.warn(`⚠️ TV ${tvId} tidak merespon pong, closing connection...`);
-        ws.terminate();
-        return;
-      }
-
-      if (ws.readyState === WebSocket.OPEN) {
-        pongReceived = false;
-        
-        try {
-          ws.ping();
-          console.log(`🏓 Ping sent to TV ${tvId}`);
-        } catch (error) {
-          console.error(`❌ Error sending ping to TV ${tvId}:`, error);
-        }
-      }
-    }, PING_INTERVAL);
-  };
-
-  startPingInterval();
-
-  // ✅ Handle pong response
-  ws.on('pong', () => {
-    pongReceived = true;
-    console.log(`🏓 Pong received from TV ${tvId}`);
-    
-    if (app.locals.tvStatus[tvId]) {
-      app.locals.tvStatus[tvId].lastPing = new Date();
-    }
-  });
+  const ip = req.socket.remoteAddress;
+  console.log(`📺 TV connected from ${ip}`);
+  
+  // ✅ Tracking alive status
+  ws.isAlive = true;
+  let tvId = null;
 
   // ✅ Handle messages dari TV
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message.toString());
-      console.log(`📨 Message from TV ${tvId}:`, data);
-
-      if (data.type === 'response') {
-        app.locals.tvResponses.set(tvId, {
+      console.log(`📨 Message from ${tvId || ip}:`, data);
+      
+      // ✅ Handle registration (cara lama yang working)
+      if (data.type === 'register') {
+        tvId = data.tv_id || data.id || ip;
+        
+        // Cleanup existing connection jika ada
+        if (app.locals.tvConnections.has(tvId)) {
+          console.warn(`⚠️ TV ${tvId} already connected, replacing...`);
+          cleanupTVConnection(tvId);
+        }
+        
+        // Store connection
+        app.locals.tvConnections.set(tvId, ws);
+        app.locals.tvStatus[tvId] = {
+          lastPing: new Date(),
+          ipAddress: ip,
+          connected: true
+        };
+        
+        console.log(`✅ TV registered: ${tvId}`);
+        console.log(`   Total connected TVs: ${app.locals.tvConnections.size}`);
+        
+        // Send welcome message
+        ws.send(JSON.stringify({ 
+          type: 'welcome', 
+          message: `Registered as ${tvId}`,
+          server_time: new Date().toISOString()
+        }));
+        
+        logInfo('TV registered', { tvId, ip });
+      }
+      
+      // ✅ Handle ping dari TV client
+      else if (data.type === 'ping') {
+        ws.isAlive = true;
+        const pingTvId = data.tv_id || tvId || ip;
+        
+        app.locals.tvStatus[pingTvId] = {
+          ...app.locals.tvStatus[pingTvId],
+          lastPing: new Date(),
+          ipAddress: ip,
+          connected: true
+        };
+        
+        // Send pong response
+        ws.send(JSON.stringify({
+          type: 'pong',
+          tv_id: pingTvId,
+          timestamp: new Date().toISOString()
+        }));
+        
+        console.log(`🏓 Ping received from TV ${pingTvId}`);
+      }
+      
+      // ✅ Handle response dari TV (untuk command execution)
+      else if (data.type === 'response') {
+        const responseTvId = data.tv_id || tvId;
+        
+        app.locals.tvResponses.set(responseTvId, {
           command: data.command,
           status: data.status,
           message: data.message,
           error: data.error,
           timestamp: data.timestamp || new Date().toISOString()
         });
-        console.log(`✅ Response from TV ${tvId} saved`);
+        
+        console.log(`✅ Response from TV ${responseTvId} saved:`, data);
       }
-
-      if (data.type === 'ping') {
-        const pongPayload = {
-          type: 'pong',
-          tv_id: tvId,
-          timestamp: new Date().toISOString()
-        };
-        ws.send(JSON.stringify(pongPayload));
-        console.log(`🏓 Pong sent to TV ${tvId}`);
+      
+      // ✅ Handle message lainnya
+      else {
+        console.log(`📩 Other message from ${tvId || ip}:`, data);
       }
-
-      if (app.locals.tvStatus[tvId]) {
-        app.locals.tvStatus[tvId].lastPing = new Date();
-      }
-
-    } catch (error) {
-      console.error(`❌ Error parsing message from TV ${tvId}:`, error);
+      
+    } catch (err) {
+      console.error('❌ Error parsing message:', err);
       console.error('Raw message:', message.toString());
     }
   });
 
-  // ✅ Handle errors
-  ws.on('error', (error) => {
-    console.error(`❌ WebSocket error for TV ${tvId}:`, error);
+  // ✅ Handle pong (dari server ping)
+  ws.on('pong', () => {
+    ws.isAlive = true;
+    if (tvId && app.locals.tvStatus[tvId]) {
+      app.locals.tvStatus[tvId].lastPing = new Date();
+    }
+    console.log(`🏓 Pong received from TV ${tvId || ip}`);
   });
 
-  // ✅ Handle disconnect
+  // ✅ Handle error
+  ws.on('error', (error) => {
+    console.error(`❌ WebSocket error for TV ${tvId || ip}:`, error);
+  });
+
+  // ✅ Handle close
   ws.on('close', (code, reason) => {
-    console.log(`📡 TV ${tvId} disconnected. Code: ${code}, Reason: ${reason}`);
+    console.log(`📡 TV ${tvId || ip} disconnected. Code: ${code}, Reason: ${reason || 'No reason'}`);
     
-    if (pingTimer) {
-      clearInterval(pingTimer);
-      pingTimer = null;
+    if (tvId) {
+      cleanupTVConnection(tvId);
+    } else {
+      // Cleanup by IP jika belum register
+      for (const [id, socket] of app.locals.tvConnections.entries()) {
+        if (socket === ws) {
+          cleanupTVConnection(id);
+          break;
+        }
+      }
     }
     
-    cleanupTVConnection(tvId);
-    console.log(`🧹 TV ${tvId} cleaned up successfully`);
+    console.log(`   Remaining connected TVs: ${app.locals.tvConnections.size}`);
   });
-
-  // ✅ Send welcome message
-  const welcomePayload = {
-    type: 'connected',
-    tv_id: tvId,
-    message: 'Connected to server successfully',
-    timestamp: new Date().toISOString()
-  };
-
-  try {
-    ws.send(JSON.stringify(welcomePayload));
-    console.log(`👋 Welcome message sent to TV ${tvId}`);
-  } catch (error) {
-    console.error(`❌ Error sending welcome message to TV ${tvId}:`, error);
-  }
 });
 
-// ✅ Cleanup stale connections periodically
+// ✅ Heartbeat untuk keep-alive (seperti kode lama)
+const heartbeatInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (!ws.isAlive) {
+      console.warn('⚠️ Terminating inactive connection');
+      return ws.terminate();
+    }
+    
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000); // 30 detik
+
+// ✅ Cleanup stale connections
 const cleanupInterval = setInterval(() => {
   const now = new Date();
-  const STALE_THRESHOLD = 60000; // 60 detik
+  const STALE_THRESHOLD = 3 * 60 * 1000; // 3 menit
 
   for (const [tvId, status] of Object.entries(app.locals.tvStatus)) {
     const timeSinceLastPing = now - status.lastPing;
@@ -200,25 +200,15 @@ const cleanupInterval = setInterval(() => {
       cleanupTVConnection(tvId);
     }
   }
-}, 30000);
+}, 60000); // Check setiap 1 menit
 
 // ============================
 // 🔧 EXPRESS SETUP
 // ============================
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// CORS middleware (optional)
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
+app.use(requestLogger);
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -247,7 +237,7 @@ app.use('/api/process', processRoutes);
 app.get('/', (req, res) => {
   res.json({
     message: 'Billing PS API Server + WebSocket is running!',
-    websocket: `ws://localhost:${process.env.PORT || 3000}`,
+    websocket: `ws://localhost:${process.env.PORT || 3000}/ws`,
     status: 'OK',
     timestamp: new Date().toISOString(),
     stats: {
@@ -359,20 +349,20 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📡 WebSocket server ready on ws://localhost:${PORT}`);
+  console.log(`📡 WebSocket server ready on ws://localhost:${PORT}/ws`);
   console.log(`🌐 API available at http://localhost:${PORT}`);
+  logInfo(`Server started with WebSocket support on port ${PORT}`);
 });
 
 // ============================
-// 🛑 GRACEFUL SHUTDOWN (hanya 1x)
+// 🛑 GRACEFUL SHUTDOWN
 // ============================
 const gracefulShutdown = () => {
   console.log('🛑 Server shutting down...');
   
   // Clear intervals
-  if (cleanupInterval) {
-    clearInterval(cleanupInterval);
-  }
+  if (heartbeatInterval) clearInterval(heartbeatInterval);
+  if (cleanupInterval) clearInterval(cleanupInterval);
   
   // Close all WebSocket connections
   wss.clients.forEach((ws) => {
@@ -384,12 +374,8 @@ const gracefulShutdown = () => {
   app.locals.tvResponses.clear();
   app.locals.tvStatus = {};
   
-  // Close WebSocket server
-  wss.close(() => {
-    console.log('✅ WebSocket server closed');
-  });
-  
-  // Close HTTP server
+  // Close servers
+  wss.close(() => console.log('✅ WebSocket server closed'));
   server.close(() => {
     console.log('✅ HTTP server closed');
     process.exit(0);
