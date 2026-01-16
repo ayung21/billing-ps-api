@@ -65,24 +65,23 @@ wss.on('connection', (ws, req) => {
       if (data.type === 'register') {
         tvId = data.tv_id || data.id || ip;
         
-        // Cleanup existing connection jika ada
         if (app.locals.tvConnections.has(tvId)) {
           console.warn(`⚠️ TV ${tvId} already connected, replacing...`);
           cleanupTVConnection(tvId);
         }
         
-        // Store connection
         app.locals.tvConnections.set(tvId, ws);
         app.locals.tvStatus[tvId] = {
           lastPing: new Date(),
           ipAddress: ip,
-          connected: true
+          connected: true,
+          model: data.model || 'unknown',
+          modeltv: data.modeltv || 'unknown'
         };
         
         console.log(`✅ TV registered: ${tvId}`);
         console.log(`   Total connected TVs: ${app.locals.tvConnections.size}`);
         
-        // Send welcome message
         ws.send(JSON.stringify({ 
           type: 'welcome', 
           message: `Registered as ${tvId}`,
@@ -100,11 +99,10 @@ wss.on('connection', (ws, req) => {
         app.locals.tvStatus[pingTvId] = {
           ...app.locals.tvStatus[pingTvId],
           lastPing: new Date(),
-          ipAddress: ip,
+          ipAddress: data.ip || ip,
           connected: true
         };
         
-        // Send pong response
         ws.send(JSON.stringify({
           type: 'pong',
           tv_id: pingTvId,
@@ -114,7 +112,7 @@ wss.on('connection', (ws, req) => {
         console.log(`🏓 Ping received from TV ${pingTvId}`);
       }
       
-      // ✅ IMPROVED: Handle response/confirm (support both types)
+      // ✅ FIXED: Handle response/confirm (support both types dari TV)
       else if (data.type === 'response' || data.type === 'confirm') {
         const responseTvId = data.tv_id || tvId;
         
@@ -126,28 +124,41 @@ wss.on('connection', (ws, req) => {
           normalizedStatus = 'failed';
         }
         
+        // ✅ Store response dengan format yang konsisten
         const responseData = {
-          command: data.command,
+          command: parseInt(data.command), // ✅ Convert ke number
           status: normalizedStatus,
-          message: data.message || (normalizedStatus === 'success' ? 'OK' : 'Failed'),
+          message: data.message || (normalizedStatus === 'success' ? 'Command executed' : 'Command failed'),
           error: data.error || null,
           timestamp: data.timestamp || data.time || new Date().toISOString(),
-          originalType: data.type // ✅ Store original type untuk debugging
+          originalType: data.type,
+          receivedAt: new Date().toISOString()
         };
         
+        // ✅ Store ke tvResponses
         app.locals.tvResponses.set(responseTvId, responseData);
         
-        console.log(`✅ ${data.type === 'confirm' ? 'Confirmation' : 'Response'} from TV ${responseTvId} saved:`, responseData);
+        console.log(`✅ ${data.type === 'confirm' ? 'Confirmation' : 'Response'} from TV ${responseTvId} saved:`);
+        console.log(`   Command: ${responseData.command}`);
+        console.log(`   Status: ${responseData.status}`);
+        if (responseData.error) {
+          console.log(`   Error: ${responseData.error}`);
+        }
         
-        // ✅ Log jika command failed
+        // ✅ Log error jika command failed
         if (normalizedStatus === 'failed' && data.error) {
-          console.error(`❌ TV ${responseTvId} command ${data.command} failed:`, data.error);
+          console.error(`❌ TV ${responseTvId} command ${data.command} failed:`);
+          console.error(`   ${data.error}`);
+          logError(new Error(`TV command failed: ${data.error}`), null, { 
+            tvId: responseTvId, 
+            command: data.command 
+          });
         }
       }
       
       // ✅ Handle message lainnya
       else {
-        console.log(`📩 Other message from ${tvId || ip}:`, data);
+        console.log(`📩 Other message type '${data.type}' from ${tvId || ip}:`, data);
       }
       
     } catch (err) {
