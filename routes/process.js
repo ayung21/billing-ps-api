@@ -580,11 +580,11 @@ router.post('/tv/command', verifyToken, async (req, res) => {
   if (!tv_id || !command) {
     return res.status(400).json({ 
       success: false,
-      message: 'tv_id and command are required'
+      message: 'tv_id and command are required',
+      received: { tv_id, command }
     });
   }
 
-  // Get WebSocket connections
   const tvConnections = req.app.locals.tvConnections;
   const tvResponses = req.app.locals.tvResponses;
   
@@ -601,12 +601,22 @@ router.post('/tv/command', verifyToken, async (req, res) => {
     return res.status(404).json({ 
       success: false,
       message: 'TV not connected or unavailable',
-      tv_id 
+      tv_id,
+      debug: {
+        wsExists: !!ws,
+        wsReadyState: ws?.readyState
+      }
     });
   }
 
   try {
-    // ✅ Gunakan helper function sendTVCommand
+    // ✅ Clear old response untuk tv_id ini sebelum kirim command baru
+    if (tvResponses.has(tv_id)) {
+      console.log(`🧹 Clearing old response for TV ${tv_id}`);
+      tvResponses.delete(tv_id);
+    }
+    
+    // ✅ Send command
     await sendTVCommand(ws, tv_id, command, target || 'manual_command');
     
     logInfo('TV Command sent', { 
@@ -616,11 +626,11 @@ router.post('/tv/command', verifyToken, async (req, res) => {
       userId: req.user?.userId 
     });
 
-    // ✅ Optional: Tunggu response dari TV
+    // ✅ Wait for response
     if (waitResponse === true || waitResponse === 'true') {
       console.log(`⏳ Waiting for response from TV ${tv_id}...`);
       
-      const timeout = parseInt(req.body.timeout) || 5000; // Default 5 detik
+      const timeout = parseInt(req.body.timeout) || 10000; // Default 10 detik
       const tvResponse = await waitForTVResponse(
         tvResponses, 
         tv_id, 
@@ -638,25 +648,28 @@ router.post('/tv/command', verifyToken, async (req, res) => {
             message: `Command ${command} executed successfully on ${tv_id}`,
             data: {
               tv_id,
-              command,
+              command: parseInt(command),
               target: target || 'manual_command',
               response: {
                 status: tvResponse.status,
                 message: tvResponse.message,
-                timestamp: tvResponse.timestamp
+                timestamp: tvResponse.timestamp,
+                executionTime: new Date(tvResponse.receivedAt) - new Date()
               }
             }
           });
         } else {
+          // Command failed
           return res.status(503).json({
             success: false,
-            message: `Command execution failed: ${tvResponse.message || tvResponse.error}`,
+            message: `Command execution failed`,
             data: {
               tv_id,
-              command,
+              command: parseInt(command),
               response: {
                 status: tvResponse.status,
                 error: tvResponse.error,
+                message: tvResponse.message,
                 timestamp: tvResponse.timestamp
               }
             }
@@ -669,20 +682,21 @@ router.post('/tv/command', verifyToken, async (req, res) => {
           message: `TV ${tv_id} tidak merespon dalam ${timeout}ms`,
           data: {
             tv_id,
-            command,
-            timeout: true
+            command: parseInt(command),
+            timeout: true,
+            waited_ms: timeout
           }
         });
       }
     }
 
-    // ✅ Tanpa tunggu response (fire and forget)
+    // ✅ Fire and forget (tanpa tunggu response)
     res.json({ 
       success: true, 
       message: `Command ${command} sent to ${tv_id}`,
       data: { 
         tv_id, 
-        command,
+        command: parseInt(command),
         target: target || 'manual_command',
         note: 'Command sent without waiting for response'
       }
