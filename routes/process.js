@@ -53,21 +53,35 @@ const sendTVCommand = async (ws, tvId, command, target = 'control') => {
   }
 
   try {
+    // ✅ Pastikan semua field ada nilainya
     const payload = {
       type: 'command',
-      tvId: tvId,
-      command: command,
-      target: target,
+      tvId: String(tvId), // ✅ Konversi ke string
+      command: parseInt(command), // ✅ Konversi ke number
+      target: String(target),
       timestamp: new Date().toISOString()
     };
 
-    ws.send(JSON.stringify(payload));
-    console.log(`📤 Command ${command} sent to TV ${tvId}`);
-    logInfo('TV command sent', { tvId, command, target });
+    // ✅ Log payload sebelum dikirim
+    console.log(`📤 Sending payload to TV ${tvId}:`, JSON.stringify(payload));
+    
+    const jsonString = JSON.stringify(payload);
+    ws.send(jsonString);
+    
+    console.log(`✅ Command ${command} sent to TV ${tvId}`);
+    logInfo('TV command sent', { tvId, command, target, payloadSent: payload });
     
     return true;
   } catch (error) {
     console.error(`❌ Error sending command to TV ${tvId}:`, error);
+    console.error('Error details:', {
+      tvId,
+      command,
+      target,
+      wsReadyState: ws?.readyState,
+      errorMessage: error.message,
+      errorStack: error.stack
+    });
     logError(error, null, { tvId, command });
     throw error;
   }
@@ -510,7 +524,6 @@ router.get("/sleep", async (req, res) => {
     });
   }
 });
-// ...existing code...
 
 // ✅ IMPROVED: Kirim perintah ke TV tertentu via WebSocket
 router.post('/tv/command', verifyToken, async (req, res) => {
