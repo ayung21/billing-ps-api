@@ -17,9 +17,9 @@ const wss = new WebSocket.Server({ server, path: '/ws' });
 // ============================
 // 📊 TV DATA STORAGE
 // ============================
-const tvConnections = new Map(); // { tvId: WebSocket }
-const tvStatus = new Map(); // { tvId: { lastPing, ipAddress, userAgent, status } }
-const tvResponses = new Map(); // { tvId: { lastResponse, command, status, message, data } }
+const tvConnections = new Map(); // { tv_id: WebSocket }
+const tvStatus = new Map(); // { tv_id: { lastPing, ipAddress, userAgent, status } }
+const tvResponses = new Map(); // { tv_id: { lastResponse, command, status, message, data } }
 
 const TIMEOUT_MS = 3 * 60 * 1000; // 3 menit timeout
 
@@ -28,7 +28,7 @@ const TIMEOUT_MS = 3 * 60 * 1000; // 3 menit timeout
 // ============================
 wss.on('connection', (ws, req) => {
   const clientIp = req.socket.remoteAddress;
-  let tvId = null;
+  let tv_id = null;
   
   console.log(`🔌 New WebSocket connection from ${clientIp}`);
   logInfo('WebSocket connection established', { clientIp });
@@ -49,9 +49,9 @@ wss.on('connection', (ws, req) => {
       // 1️⃣ REGISTER - TV mendaftar pertama kali
       // ============================
       if (data.type === 'register') {
-        tvId = data.tv_id || data.id;
+        tv_id = data.tv_id || data.id;
         
-        if (!tvId) {
+        if (!tv_id) {
           console.error('❌ Register failed: no tv_id provided');
           ws.send(JSON.stringify({
             type: 'error',
@@ -61,11 +61,11 @@ wss.on('connection', (ws, req) => {
         }
 
         // Simpan koneksi WebSocket
-        tvConnections.set(tvId, ws);
-        ws.tvId = tvId; // Attach tvId ke WebSocket object
+        tvConnections.set(tv_id, ws);
+        ws.tv_id = tv_id; // Attach tv_id ke WebSocket object
 
         // Update status TV
-        tvStatus.set(tvId, {
+        tvStatus.set(tv_id, {
           lastPing: now,
           ipAddress: data.ip || clientIp,
           userAgent: data.model || 'Unknown',
@@ -75,15 +75,15 @@ wss.on('connection', (ws, req) => {
           connectedAt: now
         });
 
-        console.log(`✅ TV Registered: ${tvId} (${data.modeltv})`);
+        console.log(`✅ TV Registered: ${tv_id} (${data.modeltv})`);
         logInfo('TV registered via WebSocket', { 
-          tv_id: tvId, 
+          tv_id: tv_id, 
           model: data.model,
           modeltv: data.modeltv,
           ip: data.ip,
           cabangid: data.cabangid 
         });
-        tvStatusLogger.logTVRegistered(tvId, data.modeltv, data.ip);
+        tvStatusLogger.logTVRegistered(tv_id, data.modeltv, data.ip);
 
         // Simpan ke database
         try {
@@ -91,18 +91,18 @@ wss.on('connection', (ws, req) => {
           const models = initModels(sequelize);
           const Brandtv = models.brandtv;
 
-          const existingTv = await Brandtv.findOne({ where: { tv_id: tvId } });
+          const existingTv = await Brandtv.findOne({ where: { tv_id: tv_id } });
 
           if (!existingTv && data.modeltv && data.cabangid) {
             await Brandtv.create({
               name: data.modeltv,
               codetvid: 1,
               cabangid: parseInt(data.cabangid),
-              tv_id: tvId,
+              tv_id: tv_id,
               ip_address: data.ip || clientIp
             });
-            console.log(`💾 TV saved to database: ${tvId}`);
-            logInfo('TV saved to database', { tv_id: tvId });
+            console.log(`💾 TV saved to database: ${tv_id}`);
+            logInfo('TV saved to database', { tv_id: tv_id });
           }
         } catch (error) {
           console.error('❌ Error saving TV to database:', error);
@@ -113,7 +113,7 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({
           type: 'register_ack',
           status: 'success',
-          tv_id: tvId,
+          tv_id: tv_id,
           message: 'Registration successful',
           timestamp: now.toISOString()
         }));
@@ -123,9 +123,9 @@ wss.on('connection', (ws, req) => {
       // 2️⃣ PING - TV mengirim heartbeat
       // ============================
       else if (data.type === 'ping') {
-        tvId = data.tv_id || ws.tvId;
+        tv_id = data.tv_id || ws.tv_id;
         
-        if (!tvId) {
+        if (!tv_id) {
           console.warn('⚠️ Ping without tv_id');
           return;
         }
@@ -133,30 +133,30 @@ wss.on('connection', (ws, req) => {
         ws.isAlive = true;
 
         // Check jika TV sebelumnya offline
-        const previousStatus = tvStatus.get(tvId);
+        const previousStatus = tvStatus.get(tv_id);
         const wasOffline = !previousStatus || 
                           (now - previousStatus.lastPing) >= TIMEOUT_MS;
 
         // Update status
-        tvStatus.set(tvId, {
+        tvStatus.set(tv_id, {
           ...previousStatus,
           lastPing: now,
           ipAddress: data.ip || clientIp,
           status: 'online'
         });
 
-        console.log(`📶 Ping from TV: ${tvId}`);
-        tvStatusLogger.logPing(tvId, data.ip || clientIp, 'WebSocket');
+        console.log(`📶 Ping from TV: ${tv_id}`);
+        tvStatusLogger.logPing(tv_id, data.ip || clientIp, 'WebSocket');
 
         if (wasOffline) {
-          console.log(`✅ TV ${tvId} came back online`);
-          tvStatusLogger.logTVOnline(tvId);
+          console.log(`✅ TV ${tv_id} came back online`);
+          tvStatusLogger.logTVOnline(tv_id);
         }
 
         // Kirim pong
         ws.send(JSON.stringify({
           type: 'pong',
-          tv_id: tvId,
+          tv_id: tv_id,
           time: now.toISOString(),
           status: 'ok'
         }));
@@ -166,23 +166,23 @@ wss.on('connection', (ws, req) => {
       // 3️⃣ COMMAND_RESPONSE - TV mengirim hasil eksekusi command
       // ============================
       else if (data.type === 'command_response') {
-        tvId = data.tv_id || ws.tvId;
+        tv_id = data.tv_id || ws.tv_id;
 
-        if (!tvId) {
+        if (!tv_id) {
           console.error('❌ Command response without tv_id');
           return;
         }
 
-        console.log(`📥 Command Response from TV ${tvId}:`, {
+        console.log(`📥 Command Response from TV ${tv_id}:`, {
           command: data.command,
           status: data.status,
           message: data.message
         });
 
         // Simpan response
-        tvResponses.set(tvId, {
+        tvResponses.set(tv_id, {
           lastResponse: now,
-          tvId: tvId,
+          tv_id: tv_id,
           command: data.command,
           status: data.status,
           message: data.message,
@@ -192,14 +192,14 @@ wss.on('connection', (ws, req) => {
         });
 
         logInfo('Command response received from TV', {
-          tv_id: tvId,
+          tv_id: tv_id,
           command: data.command,
           status: data.status,
           message: data.message
         });
 
         tvStatusLogger.logCommandResponse(
-          tvId, 
+          tv_id, 
           data.command, 
           data.status, 
           data.message
@@ -208,7 +208,7 @@ wss.on('connection', (ws, req) => {
         // Kirim acknowledgment
         ws.send(JSON.stringify({
           type: 'response_ack',
-          tv_id: tvId,
+          tv_id: tv_id,
           received: true,
           timestamp: now.toISOString()
         }));
@@ -218,18 +218,18 @@ wss.on('connection', (ws, req) => {
       // 4️⃣ ERROR - TV mengirim error message
       // ============================
       else if (data.type === 'error') {
-        tvId = data.tv_id || ws.tvId;
+        tv_id = data.tv_id || ws.tv_id;
 
-        console.error(`❌ Error from TV ${tvId}:`, data.message);
+        console.error(`❌ Error from TV ${tv_id}:`, data.message);
         logError(new Error(`TV Error: ${data.message}`), null, { 
-          tv_id: tvId,
+          tv_id: tv_id,
           error_details: data
         });
 
         // Simpan error sebagai response
-        tvResponses.set(tvId, {
+        tvResponses.set(tv_id, {
           lastResponse: now,
-          tvId: tvId,
+          tv_id: tv_id,
           command: data.command || 'unknown',
           status: 'error',
           message: data.message,
@@ -242,18 +242,18 @@ wss.on('connection', (ws, req) => {
       // 5️⃣ STATUS_UPDATE - TV mengirim update status
       // ============================
       else if (data.type === 'status_update') {
-        tvId = data.tv_id || ws.tvId;
+        tv_id = data.tv_id || ws.tv_id;
 
-        if (!tvId) {
+        if (!tv_id) {
           console.warn('⚠️ Status update without tv_id');
           return;
         }
 
-        console.log(`📊 Status Update from TV ${tvId}:`, data.status);
+        console.log(`📊 Status Update from TV ${tv_id}:`, data.status);
         
         // Update status TV
-        const currentStatus = tvStatus.get(tvId) || {};
-        tvStatus.set(tvId, {
+        const currentStatus = tvStatus.get(tv_id) || {};
+        tvStatus.set(tv_id, {
           ...currentStatus,
           lastPing: now,
           currentStatus: data.status,
@@ -262,7 +262,7 @@ wss.on('connection', (ws, req) => {
         });
 
         logInfo('TV status update received', {
-          tv_id: tvId,
+          tv_id: tv_id,
           status: data.status,
           details: data.details
         });
@@ -272,23 +272,23 @@ wss.on('connection', (ws, req) => {
       // 6️⃣ CONFIRM - TV mengirim konfirmasi command
       // ============================
       else if (data.type === 'confirm') {
-        tvId = data.tv_id || ws.tvId; // ✅ TV kirim tv_id (snake_case)
+        tv_id = data.tv_id || ws.tv_id; // ✅ TV kirim tv_id (snake_case)
 
-        if (!tvId) {
+        if (!tv_id) {
           console.error('❌ Confirm without tv_id');
           return;
         }
 
-        console.log(`📥 Command Confirmation from TV ${tvId}:`, {
+        console.log(`📥 Command Confirmation from TV ${tv_id}:`, {
           command: data.command,
           status: data.status,
           error: data.error
         });
 
         // Simpan response
-        tvResponses.set(tvId, {
+        tvResponses.set(tv_id, {
           lastResponse: now,
-          tvId: tvId,
+          tv_id: tv_id,
           command: data.command,
           status: data.status, // "success" atau "failed"
           message: data.status === 'success' ? 'Command executed successfully' : 'Command execution failed',
@@ -296,17 +296,17 @@ wss.on('connection', (ws, req) => {
           timestamp: data.time || now.toISOString()
         });
 
-        console.log(`💾 Response saved for TV ${tvId}, command ${data.command}, status ${data.status}`);
+        console.log(`💾 Response saved for TV ${tv_id}, command ${data.command}, status ${data.status}`);
 
         logInfo('Command confirmation received from TV', {
-          tv_id: tvId,
+          tv_id: tv_id,
           command: data.command,
           status: data.status,
           error: data.error
         });
 
         tvStatusLogger.logCommandResponse(
-          tvId, 
+          tv_id, 
           data.command, 
           data.status, 
           data.error || 'Success'
@@ -315,7 +315,7 @@ wss.on('connection', (ws, req) => {
         // Kirim acknowledgment
         ws.send(JSON.stringify({
           type: 'confirm_ack',
-          tv_id: tvId,
+          tv_id: tv_id,
           received: true,
           timestamp: now.toISOString()
         }));
@@ -325,7 +325,7 @@ wss.on('connection', (ws, req) => {
       // 7️⃣ UNKNOWN MESSAGE TYPE
       // ============================
       else {
-        console.log(`⚠️ Unknown message type: ${data.type} from ${tvId || clientIp}`);
+        console.log(`⚠️ Unknown message type: ${data.type} from ${tv_id || clientIp}`);
         logInfo('Unknown WebSocket message type', { type: data.type, data });
       }
 
@@ -352,29 +352,29 @@ wss.on('connection', (ws, req) => {
   // ❌ CLOSE HANDLER
   // ============================
   ws.on('close', (code, reason) => {
-    tvId = ws.tvId;
+    tv_id = ws.tv_id;
     
-    console.log(`❌ WebSocket closed for TV: ${tvId || 'unknown'} (code: ${code}, reason: ${reason || 'none'})`);
+    console.log(`❌ WebSocket closed for TV: ${tv_id || 'unknown'} (code: ${code}, reason: ${reason || 'none'})`);
     logInfo('WebSocket connection closed', { 
-      tv_id: tvId, 
+      tv_id: tv_id, 
       code, 
       reason: reason.toString() 
     });
 
-    if (tvId) {
-      tvConnections.delete(tvId);
+    if (tv_id) {
+      tvConnections.delete(tv_id);
       
       // Update status ke offline
-      const currentStatus = tvStatus.get(tvId);
+      const currentStatus = tvStatus.get(tv_id);
       if (currentStatus) {
-        tvStatus.set(tvId, {
+        tvStatus.set(tv_id, {
           ...currentStatus,
           status: 'offline',
           disconnectedAt: new Date()
         });
       }
       
-      tvStatusLogger.logTVOffline(tvId);
+      tvStatusLogger.logTVOffline(tv_id);
     }
   });
 
@@ -382,8 +382,8 @@ wss.on('connection', (ws, req) => {
   // ⚠️ ERROR HANDLER
   // ============================
   ws.on('error', (error) => {
-    console.error(`⚠️ WebSocket error for TV: ${ws.tvId || 'unknown'}`, error);
-    logError(error, null, { tv_id: ws.tvId });
+    console.error(`⚠️ WebSocket error for TV: ${ws.tv_id || 'unknown'}`, error);
+    logError(error, null, { tv_id: ws.tv_id });
   });
 
   // ============================
@@ -403,7 +403,7 @@ wss.on('connection', (ws, req) => {
 const heartbeatInterval = setInterval(() => {
   wss.clients.forEach((ws) => {
     if (!ws.isAlive) {
-      console.log(`💀 Terminating inactive connection: ${ws.tvId || 'unknown'}`);
+      console.log(`💀 Terminating inactive connection: ${ws.tv_id || 'unknown'}`);
       return ws.terminate();
     }
     
@@ -419,7 +419,7 @@ const cleanupInterval = setInterval(() => {
   const now = new Date();
   let offlineCount = 0;
 
-  for (const [tvId, status] of tvStatus.entries()) {
+  for (const [tv_id, status] of tvStatus.entries()) {
     const timeSinceLastPing = now - status.lastPing;
     
     if (timeSinceLastPing >= TIMEOUT_MS && status.status === 'online') {
@@ -427,8 +427,8 @@ const cleanupInterval = setInterval(() => {
       status.disconnectedAt = now;
       offlineCount++;
       
-      console.log(`⚠️ TV ${tvId} marked as offline (no ping for ${Math.floor(timeSinceLastPing / 1000)}s)`);
-      tvStatusLogger.logTVOffline(tvId);
+      console.log(`⚠️ TV ${tv_id} marked as offline (no ping for ${Math.floor(timeSinceLastPing / 1000)}s)`);
+      tvStatusLogger.logTVOffline(tv_id);
     }
   }
 
@@ -525,18 +525,18 @@ app.get('/status', (req, res) => {
   const now = new Date();
   const statusList = {};
 
-  for (const [tvId, status] of tvStatus.entries()) {
+  for (const [tv_id, status] of tvStatus.entries()) {
     const timeSinceLastPing = now - status.lastPing;
     const isOnline = timeSinceLastPing < TIMEOUT_MS;
 
-    statusList[tvId] = {
+    statusList[tv_id] = {
       online: isOnline,
       lastPing: status.lastPing.toISOString(),
       secondsSinceLastPing: Math.floor(timeSinceLastPing / 1000),
       ipAddress: status.ipAddress,
       modelTv: status.modelTv,
       currentStatus: status.currentStatus,
-      wsConnected: tvConnections.has(tvId)
+      wsConnected: tvConnections.has(tv_id)
     };
   }
 
@@ -600,7 +600,7 @@ const shutdown = () => {
   clearInterval(cleanupInterval);
   
   // Close all WebSocket connections
-  tvConnections.forEach((ws, tvId) => {
+  tvConnections.forEach((ws, tv_id) => {
     ws.close(1000, 'Server shutting down');
   });
   
