@@ -27,22 +27,69 @@ try {
   console.error('❌ Error loading models:', error.message);
 }
 
-// ✅ Helper: Wait for TV response (Promise-based, non-blocking)
+// ✅ Helper: Wait for TV response dengan improved debugging
 const waitForTVResponse = (tvResponses, tv_id, command, timeout = 5000) => {
   return new Promise((resolve) => {
     const startTime = Date.now();
+    let checkCount = 0;
+    const expectedCommand = parseInt(command); // ✅ Normalize ke number
+    
+    console.log(`⏳ Waiting for response from TV ${tv_id}, command: ${expectedCommand}, timeout: ${timeout}ms`);
     
     const checkInterval = setInterval(() => {
+      checkCount++;
       const response = tvResponses.get(tv_id);
+      const elapsed = Date.now() - startTime;
       
-      if (response && response.command === command) {
+      // ✅ Debug log setiap 1 detik (10 checks x 100ms)
+      if (checkCount % 10 === 0) {
+        console.log(`⏳ Still waiting for TV ${tv_id} (${elapsed}ms / ${timeout}ms)...`);
+        if (response) {
+          console.log(`   Found response with command: ${response.command} (expected: ${expectedCommand})`);
+          console.log(`   Status: ${response.status}`);
+        } else {
+          console.log(`   No response in map yet`);
+        }
+      }
+      
+      // ✅ Check response dengan command matching
+      if (response) {
+        const responseCommand = parseInt(response.command);
+        
+        // ✅ Match by command
+        if (responseCommand === expectedCommand) {
+          clearInterval(checkInterval);
+          console.log(`✅ Response matched for TV ${tv_id}!`);
+          console.log(`   Command: ${responseCommand}`);
+          console.log(`   Status: ${response.status}`);
+          console.log(`   Elapsed: ${elapsed}ms`);
+          resolve(response);
+          return;
+        } else {
+          // Command tidak match, mungkin response dari command sebelumnya
+          if (checkCount % 10 === 0) {
+            console.log(`⚠️ Response command mismatch: expected ${expectedCommand}, got ${responseCommand}`);
+          }
+        }
+      }
+      
+      // ✅ Timeout check
+      if (elapsed >= timeout) {
         clearInterval(checkInterval);
-        resolve(response);
-      } else if (Date.now() - startTime >= timeout) {
-        clearInterval(checkInterval);
+        
+        console.warn(`⏱️ TIMEOUT: TV ${tv_id} tidak merespon dalam ${timeout}ms`);
+        console.warn(`   Expected command: ${expectedCommand}`);
+        console.warn(`   Total checks: ${checkCount}`);
+        console.warn(`   Last response in map:`, response || 'null');
+        
+        // ✅ Cek apakah ada response tapi command tidak match
+        if (response) {
+          console.warn(`   ⚠️ Response ada tapi command tidak match (${response.command} vs ${expectedCommand})`);
+        }
+        
         resolve(null); // Timeout
       }
-    }, 100);
+    }, 100); // Check setiap 100ms
   });
 };
 
