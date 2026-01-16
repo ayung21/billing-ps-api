@@ -61,7 +61,7 @@ wss.on('connection', (ws, req) => {
       const data = JSON.parse(message.toString());
       console.log(`📨 Message from ${tvId || ip}:`, data);
       
-      // ✅ Handle registration (cara lama yang working)
+      // ✅ Handle registration
       if (data.type === 'register') {
         tvId = data.tv_id || data.id || ip;
         
@@ -92,7 +92,7 @@ wss.on('connection', (ws, req) => {
         logInfo('TV registered', { tvId, ip });
       }
       
-      // ✅ Handle ping dari TV client
+      // ✅ Handle ping
       else if (data.type === 'ping') {
         ws.isAlive = true;
         const pingTvId = data.tv_id || tvId || ip;
@@ -114,19 +114,35 @@ wss.on('connection', (ws, req) => {
         console.log(`🏓 Ping received from TV ${pingTvId}`);
       }
       
-      // ✅ Handle response dari TV (untuk command execution)
-      else if (data.type === 'response') {
+      // ✅ IMPROVED: Handle response/confirm (support both types)
+      else if (data.type === 'response' || data.type === 'confirm') {
         const responseTvId = data.tv_id || tvId;
         
-        app.locals.tvResponses.set(responseTvId, {
-          command: data.command,
-          status: data.status,
-          message: data.message,
-          error: data.error,
-          timestamp: data.timestamp || new Date().toISOString()
-        });
+        // ✅ Normalize status
+        let normalizedStatus = data.status;
+        if (data.status === 'success') {
+          normalizedStatus = 'success';
+        } else if (data.status === 'failed' || data.status === 'error') {
+          normalizedStatus = 'failed';
+        }
         
-        console.log(`✅ Response from TV ${responseTvId} saved:`, data);
+        const responseData = {
+          command: data.command,
+          status: normalizedStatus,
+          message: data.message || (normalizedStatus === 'success' ? 'OK' : 'Failed'),
+          error: data.error || null,
+          timestamp: data.timestamp || data.time || new Date().toISOString(),
+          originalType: data.type // ✅ Store original type untuk debugging
+        };
+        
+        app.locals.tvResponses.set(responseTvId, responseData);
+        
+        console.log(`✅ ${data.type === 'confirm' ? 'Confirmation' : 'Response'} from TV ${responseTvId} saved:`, responseData);
+        
+        // ✅ Log jika command failed
+        if (normalizedStatus === 'failed' && data.error) {
+          console.error(`❌ TV ${responseTvId} command ${data.command} failed:`, data.error);
+        }
       }
       
       // ✅ Handle message lainnya
@@ -228,7 +244,7 @@ app.use('/api/promo', promoRoutes);
 app.use('/api/produk', produkRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/transaksi', transaksiRoutes);
-app.use('/api/process', processRoutes);
+app.use('/api/processcode', processRoutes);
 
 // ============================
 // 🌐 API ENDPOINTS
