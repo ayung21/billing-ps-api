@@ -2,13 +2,12 @@ const express = require('express');
 const { verifyToken } = require('../middleware/auth');
 const { sequelize } = require('../config/database');
 const { Op } = require('sequelize');
-const { exec } = require("child_process");
 const { logError, logInfo } = require('../middleware/logger');
 const WebSocket = require('ws');
 
 const router = express.Router();
 
-// Import model cabang, users, dan access
+// Import models
 let Transaksi, history_units, TransaksiDetail, Unit, Brandtv;
 try {
   const initModels = require('../models/init-models');
@@ -20,7 +19,7 @@ try {
   Brandtv = models.brandtv;
 
   if (!Transaksi) {
-    console.error('❌ Transaksi model not found in models');
+    console.error('❌ Transaksi model not found');
   } else {
     console.log('✅ Transaksi model loaded successfully');
   }
@@ -28,19 +27,76 @@ try {
   console.error('❌ Error loading models:', error.message);
 }
 
+// ✅ Helper: Wait for TV response (Promise-based, non-blocking)
+const waitForTVResponse = (tvResponses, tvId, command, timeout = 5000) => {
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    
+    const checkInterval = setInterval(() => {
+      const response = tvResponses.get(tvId);
+      
+      if (response && response.command === command) {
+        clearInterval(checkInterval);
+        resolve(response);
+      } else if (Date.now() - startTime >= timeout) {
+        clearInterval(checkInterval);
+        resolve(null); // Timeout
+      }
+    }, 100);
+  });
+};
+
+// ✅ Helper: Send command to TV with error handling
+const sendTVCommand = async (ws, tvId, command, target = 'control') => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    throw new Error(`TV ${tvId} tidak terhubung`);
+  }
+
+  try {
+    const payload = {
+      type: 'command',
+      tvId: tvId,
+      command: command,
+      target: target,
+      timestamp: new Date().toISOString()
+    };
+
+    ws.send(JSON.stringify(payload));
+    console.log(`📤 Command ${command} sent to TV ${tvId}`);
+    logInfo('TV command sent', { tvId, command, target });
+    
+    return true;
+  } catch (error) {
+    console.error(`❌ Error sending command to TV ${tvId}:`, error);
+    logError(error, null, { tvId, command });
+    throw error;
+  }
+};
+
 router.get('/', (req, res) => {
   res.json({
-    message: 'Billing PS API - ADB Control Endpoint is active.',
+    message: 'Billing PS API - WebSocket Control Endpoint is active.',
     status: 'OK',
     timestamp: new Date().toISOString()
   });
 });
 
-// ...existing code...
-
+// ✅ IMPROVED: Time Out Endpoint
 router.get("/time_out", async (req, res) => {
-  console.log('time out endpoint called');
+  console.log('🔔 Time out endpoint called');
+  
   try {
+    // ✅ Validate WebSocket services
+    const tvConnections = req.app.locals.tvConnections;
+    const tvResponses = req.app.locals.tvResponses;
+    
+    if (!tvConnections || !tvResponses) {
+      return res.status(500).json({
+        success: false,
+        message: 'WebSocket services not available'
+      });
+    }
+
     const includeOptions = [
       {
         model: TransaksiDetail,
@@ -58,21 +114,17 @@ router.get("/time_out", async (req, res) => {
     ];
 
     const getAll = await Transaksi.findAll({
-      where: {
-        status: 1,
-      },
+      where: { status: 1 },
       include: includeOptions
     });
 
-    const tvConnections = req.app.locals.tvConnections;
-    const tvResponses = req.app.locals.tvResponses; // ✅ TAMBAHKAN INI
-    const adbResults = [];
+    const results = [];
     let totalProcessed = 0;
     let totalSuccess = 0;
     let totalFailed = 0;
 
     for (const transaksi of getAll) {
-      // Group details by unit_token untuk menghitung total hours
+      // Group details by unit_token
       const unitGroups = {};
       
       transaksi.details
@@ -89,7 +141,6 @@ router.get("/time_out", async (req, res) => {
           unitGroups[detail.unit_token].allDetails.push(detail);
           unitGroups[detail.unit_token].totalHours += detail.hours || 0;
           
-          // Simpan detail type 0 sebagai initial detail untuk referensi waktu mulai
           if (detail.type === 0) {
             unitGroups[detail.unit_token].initialDetail = detail;
           }
@@ -102,20 +153,19 @@ router.get("/time_out", async (req, res) => {
           continue;
         }
 
-        // Hitung timeout berdasarkan waktu transaksi awal + total hours
+        // Hitung timeout
         const createdAt = new Date(group.initialDetail.createdAt);
         const totalHours = group.totalHours;
         const endTime = new Date(createdAt.getTime() + (totalHours * 60 * 60 * 1000));
         const now = new Date();
 
-        console.log(`Unit Token: ${unitToken}`);
-        console.log(`Transaction Start: ${createdAt}`);
-        console.log(`Total Hours (type 0 + type 1): ${totalHours}`);
-        console.log(`End Time: ${endTime}`);
-        console.log(`Now: ${now}`);
-        console.log(`Is Expired: ${now >= endTime}`);
+        console.log(`\n📊 Unit Token: ${unitToken}`);
+        console.log(`   Start: ${createdAt.toISOString()}`);
+        console.log(`   Hours: ${totalHours}h`);
+        console.log(`   End: ${endTime.toISOString()}`);
+        console.log(`   Expired: ${now >= endTime}`);
 
-        // Jika belum waktunya timeout, skip unit ini
+        // Skip jika belum timeout
         if (now < endTime) {
           console.log(`⏳ Unit ${unitToken} belum timeout, skip...`);
           continue;
@@ -125,17 +175,16 @@ router.get("/time_out", async (req, res) => {
         totalProcessed++;
 
         try {
-          // 1. Dapatkan Unit History
+          // Get unit history
           const checkunit = await history_units.findOne({
             where: { token: unitToken }
           });
 
-          // 2. Tentukan dan Jalankan Query
-          let getIP;
-
+          // Get TV info
+          let getTV;
           if (!checkunit) {
-            getIP = await sequelize.query(`
-              SELECT b.ip_address, b.tv_id, c.command, c.code FROM units u 
+            getTV = await sequelize.query(`
+              SELECT b.tv_id, c.command FROM units u 
               JOIN brandtv b ON b.id = u.brandtvid
               JOIN codetv c ON c.id = b.codetvid
               WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
@@ -144,8 +193,8 @@ router.get("/time_out", async (req, res) => {
               type: sequelize.QueryTypes.SELECT,
             });
           } else {
-            getIP = await sequelize.query(`
-              SELECT b.ip_address, b.tv_id, c.command, c.code FROM units u 
+            getTV = await sequelize.query(`
+              SELECT b.tv_id, c.command FROM units u 
               JOIN brandtv b ON b.id = u.brandtvid
               JOIN codetv c ON c.id = b.codetvid
               WHERE u.status = 1 AND c.desc = 'on/off' AND u.id = ?
@@ -155,95 +204,75 @@ router.get("/time_out", async (req, res) => {
             });
           }
 
-          // 3. PENANGANAN DATA KOSONG
-          if (!getIP || getIP.length === 0) {
+          if (!getTV || getTV.length === 0) {
             totalFailed++;
-            adbResults.push({
+            results.push({
               token: unitToken,
               transaction_code: transaksi.code,
               success: false,
-              message: "Unit atau Perintah Power (off) tidak ditemukan."
+              message: "TV configuration not found"
             });
             continue;
           }
 
-          const unitData = getIP[0];
-          const ws = tvConnections.get(unitData.tv_id);
+          const tvInfo = getTV[0];
+          const ws = tvConnections.get(tvInfo.tv_id);
 
           if (!ws || ws.readyState !== WebSocket.OPEN) {
             totalFailed++;
-            adbResults.push({
+            results.push({
               token: unitToken,
               transaction_code: transaksi.code,
               success: false,
-              message: `TV ${unitData.tv_id} tidak terhubung atau unavailable`
+              message: `TV ${tvInfo.tv_id} tidak terhubung`,
+              tv_id: tvInfo.tv_id
             });
             continue;
           }
 
-          // 4. KIRIM COMMAND KE TV
-          const powerOffCommand = 223; // ✅ Definisikan command sebagai konstanta
-          console.log(`📤 Mengirim perintah Power Off ke TV ${unitData.tv_id}, command: ${powerOffCommand}`);
-          ws.send(JSON.stringify({ 
-            type: 'command', 
-            tvId: unitData.tv_id, // ✅ Server kirim dengan tvId (camelCase)
-            command: powerOffCommand,
-            target: 'power_off',
-            timestamp: new Date().toISOString()
-          }));
-
-          // ✅ 5. TUNGGU RESPONSE DARI TV (dengan timeout)
-          let tvResponse = null;
-          const maxWaitTime = 5000; // 5 detik timeout
-          const startWait = Date.now();
-
-          console.log(`⏳ Menunggu response dari TV ${unitData.tv_id}...`);
-
-          while (Date.now() - startWait < maxWaitTime) {
-            // Cek apakah ada response dari TV
-            const response = tvResponses.get(unitData.tv_id);
-            
-            // ✅ Cek dengan powerOffCommand (223), bukan unitData.command
-            if (response && response.command === powerOffCommand) {
-              tvResponse = response;
-              console.log(`📥 Response diterima dari TV ${unitData.tv_id}:`, tvResponse);
-              break;
-            }
-            
-            // Tunggu 100ms sebelum cek lagi
-            await new Promise(resolve => setTimeout(resolve, 100));
-          }
-
-          // Debug jika tidak ada response
-          if (!tvResponse) {
-            console.warn(`⚠️ Tidak ada response dari TV ${unitData.tv_id} setelah ${maxWaitTime}ms`);
-            console.log(`Current responses in map:`, Array.from(tvResponses.keys()));
-          }
-
-          // ✅ 6. EVALUASI RESPONSE (sesuaikan dengan "success" dan "failed")
-          if (tvResponse && tvResponse.status === 'success') {
-            console.log(`✅ TV ${unitData.tv_id} berhasil dimatikan`);
-            
-            // 7. UPDATE STATUS TRANSAKSI MENJADI 0 (SELESAI)
-            await transaksi.update({
-              status: 0,
-            });
-
-            console.log(`✅ Transaksi ${transaksi.code} berhasil diupdate status = 0`);
-            totalSuccess++;
-
-            adbResults.push({
+          // ✅ Kirim command (gunakan command dari database, bukan hardcode)
+          try {
+            await sendTVCommand(ws, tvInfo.tv_id, tvInfo.command, 'power_off');
+          } catch (sendError) {
+            totalFailed++;
+            results.push({
               token: unitToken,
               transaction_code: transaksi.code,
-              tv_id: unitData.tv_id,
-              ip_address: unitData.ip_address,
+              success: false,
+              message: `Failed to send command: ${sendError.message}`,
+              tv_id: tvInfo.tv_id
+            });
+            continue;
+          }
+
+          // ✅ Tunggu response (Promise-based, non-blocking)
+          console.log(`⏳ Menunggu response dari TV ${tvInfo.tv_id}...`);
+          const tvResponse = await waitForTVResponse(
+            tvResponses, 
+            tvInfo.tv_id, 
+            tvInfo.command, 
+            10000 // 10 detik timeout
+          );
+
+          // Evaluasi response
+          if (tvResponse && tvResponse.status === 'success') {
+            console.log(`✅ TV ${tvInfo.tv_id} berhasil dimatikan`);
+            
+            // Update transaksi
+            await transaksi.update({ status: 0 });
+            console.log(`✅ Transaksi ${transaksi.code} updated to status 0`);
+            
+            totalSuccess++;
+            results.push({
+              token: unitToken,
+              transaction_code: transaksi.code,
+              tv_id: tvInfo.tv_id,
               start_time: createdAt,
               total_hours: totalHours,
               end_time: endTime,
               transaction_updated: true,
-              command_sent: powerOffCommand,
+              command_sent: tvInfo.command,
               command_status: tvResponse.status,
-              command_message: tvResponse.message,
               success: true,
               details_processed: group.allDetails.map(d => ({
                 id: d.id,
@@ -253,35 +282,35 @@ router.get("/time_out", async (req, res) => {
               }))
             });
 
-            // Clear response setelah digunakan
-            tvResponses.delete(unitData.tv_id);
+            // Clear response
+            tvResponses.delete(tvInfo.tv_id);
 
           } else if (tvResponse && (tvResponse.status === 'failed' || tvResponse.status === 'error')) {
-            console.error(`❌ TV ${unitData.tv_id} gagal eksekusi command: ${tvResponse.error || tvResponse.message}`);
+            console.error(`❌ TV ${tvInfo.tv_id} gagal eksekusi: ${tvResponse.error}`);
             totalFailed++;
 
-            adbResults.push({
+            results.push({
               token: unitToken,
               transaction_code: transaksi.code,
-              tv_id: unitData.tv_id,
+              tv_id: tvInfo.tv_id,
               success: false,
-              command_sent: powerOffCommand,
+              command_sent: tvInfo.command,
               command_status: tvResponse.status,
               message: tvResponse.message || 'Command execution failed',
               error: tvResponse.error
             });
 
           } else {
-            // Timeout - tidak ada response
-            console.warn(`⚠️ TV ${unitData.tv_id} tidak merespon dalam ${maxWaitTime}ms`);
+            // Timeout
+            console.warn(`⏱️ TV ${tvInfo.tv_id} tidak merespon (timeout)`);
             totalFailed++;
 
-            adbResults.push({
+            results.push({
               token: unitToken,
               transaction_code: transaksi.code,
-              tv_id: unitData.tv_id,
+              tv_id: tvInfo.tv_id,
               success: false,
-              command_sent: powerOffCommand,
+              command_sent: tvInfo.command,
               message: 'TV tidak merespon (timeout)',
               timeout: true
             });
@@ -289,57 +318,71 @@ router.get("/time_out", async (req, res) => {
 
         } catch (error) {
           totalFailed++;
-          console.error(`Error processing unit ${unitToken}:`, error.message);
-          adbResults.push({
+          console.error(`❌ Error processing unit ${unitToken}:`, error.message);
+          logError(error, null, { unitToken, transactionCode: transaksi.code });
+          
+          results.push({
             token: unitToken,
             transaction_code: transaksi.code,
             success: false,
             message: error.message || "Command failed",
-            error: error
+            error: error.stack
           });
         }
       }
     }
 
-    // 5. RESPON KEBERHASILAN
     return res.json({
       success: true,
-      message: `Perintah Power TV selesai diproses.`,
+      message: `Perintah Power Off TV selesai diproses.`,
       summary: {
         total_units: totalProcessed,
         success: totalSuccess,
-        failed: totalFailed
+        failed: totalFailed,
+        success_rate: totalProcessed > 0 ? 
+          `${((totalSuccess / totalProcessed) * 100).toFixed(1)}%` : '0%'
       },
-      adb_results: adbResults
+      results: results
     });
 
   } catch (error) {
-    console.error("Error pada /time_out:", error);
+    console.error("❌ Error pada /time_out:", error);
+    logError(error);
+    
     return res.status(500).json({
       success: false,
-      message: "Terjadi kesalahan internal saat memproses perintah.",
+      message: "Terjadi kesalahan internal.",
       error: error.message
     });
   }
 });
 
-// ...existing code...
-
+// ✅ IMPROVED: Sleep Endpoint
 router.get("/sleep", async (req, res) => {
-  console.log('loop mode sleep');
+  console.log('😴 Sleep mode endpoint called');
+  
   try {
-    const adbResults = [];
-    let totalProcessed = 0;
-    let totalSuccess = 0;
-    let totalFailed = 0;
+    // ✅ Validate WebSocket services
     const tvConnections = req.app.locals.tvConnections;
     const tvResponses = req.app.locals.tvResponses;
 
+    if (!tvConnections || !tvResponses) {
+      return res.status(500).json({
+        success: false,
+        message: 'WebSocket services not available'
+      });
+    }
+
+    const results = [];
+    let totalProcessed = 0;
+    let totalSuccess = 0;
+    let totalFailed = 0;
+
     const getAll = await sequelize.query(`
-      SELECT b.ip_address, b.tv_id, c.command FROM units u 
+      SELECT b.tv_id, c.command FROM units u 
       JOIN brandtv b ON b.id = u.brandtvid 
       JOIN codetv c ON c.id = b.codetvid 
-      WHERE token NOT IN(
+      WHERE u.token NOT IN(
         SELECT td.unit_token FROM transaksi t 
         JOIN transaksi_detail td ON td.code = t.code 
         WHERE t.status = 1 AND td.status = 1
@@ -354,13 +397,12 @@ router.get("/sleep", async (req, res) => {
       totalProcessed++;
       
       try {
-        const ws = tvConnections?.get(unit.tv_id);
+        const ws = tvConnections.get(unit.tv_id);
         
         if (!ws || ws.readyState !== WebSocket.OPEN) {
           console.log(`⚠️ TV ${unit.tv_id} tidak terhubung, skip...`);
           totalFailed++;
-          adbResults.push({
-            ip: unit.ip_address,
+          results.push({
             tv_id: unit.tv_id,
             success: false,
             message: 'TV not connected'
@@ -368,43 +410,37 @@ router.get("/sleep", async (req, res) => {
           continue;
         }
 
-        // ✅ Kirim command via WebSocket dengan format yang benar
-        console.log(`📤 Mengirim perintah Sleep ke TV ${unit.tv_id} (command: ${unit.command})`);
-        ws.send(JSON.stringify({ 
-          type: 'command', 
-          tv_id: unit.tv_id,
-          command: unit.command, // Gunakan command dari database
-          target: 'sleep',
-          timestamp: new Date().toISOString()
-        }));
-
-        // ✅ Tunggu response dari TV (dengan timeout)
-        let tvResponse = null;
-        const maxWaitTime = 5000; // 5 detik timeout
-        const startWait = Date.now();
-        
-        while (Date.now() - startWait < maxWaitTime) {
-          const response = tvResponses.get(unit.tv_id);
-          
-          if (response && response.command === unit.command) {
-            tvResponse = response;
-            console.log(`📥 Response diterima dari TV ${unit.tv_id}:`, tvResponse);
-            break;
-          }
-          
-          await new Promise(resolve => setTimeout(resolve, 100));
+        // ✅ Kirim sleep command
+        try {
+          await sendTVCommand(ws, unit.tv_id, unit.command, 'sleep');
+        } catch (sendError) {
+          totalFailed++;
+          results.push({
+            tv_id: unit.tv_id,
+            success: false,
+            message: `Failed to send command: ${sendError.message}`
+          });
+          continue;
         }
 
-        // ✅ Evaluasi response
+        // ✅ Tunggu response
+        console.log(`⏳ Menunggu response dari TV ${unit.tv_id}...`);
+        const tvResponse = await waitForTVResponse(
+          tvResponses, 
+          unit.tv_id, 
+          unit.command, 
+          5000
+        );
+
+        // Evaluasi response
         if (tvResponse && tvResponse.status === 'success') {
           console.log(`✅ Sleep command berhasil untuk TV ${unit.tv_id}`);
           totalSuccess++;
 
-          adbResults.push({
-            ip: unit.ip_address,
+          results.push({
             tv_id: unit.tv_id,
             success: true,
-            message: 'Sleep command sent successfully',
+            message: 'Sleep command executed successfully',
             command: unit.command,
             command_status: tvResponse.status
           });
@@ -413,24 +449,22 @@ router.get("/sleep", async (req, res) => {
           tvResponses.delete(unit.tv_id);
 
         } else if (tvResponse && (tvResponse.status === 'failed' || tvResponse.status === 'error')) {
-          console.error(`❌ Sleep command gagal untuk TV ${unit.tv_id}: ${tvResponse.error}`);
+          console.error(`❌ Sleep command gagal untuk TV ${unit.tv_id}`);
           totalFailed++;
 
-          adbResults.push({
-            ip: unit.ip_address,
+          results.push({
             tv_id: unit.tv_id,
             success: false,
-            message: tvResponse.message,
+            message: tvResponse.message || 'Command failed',
             error: tvResponse.error
           });
 
         } else {
           // Timeout
-          console.warn(`⚠️ TV ${unit.tv_id} tidak merespon dalam ${maxWaitTime}ms`);
+          console.warn(`⏱️ TV ${unit.tv_id} tidak merespon (timeout)`);
           totalFailed++;
 
-          adbResults.push({
-            ip: unit.ip_address,
+          results.push({
             tv_id: unit.tv_id,
             success: false,
             message: 'TV tidak merespon (timeout)',
@@ -440,13 +474,14 @@ router.get("/sleep", async (req, res) => {
 
       } catch (error) {
         totalFailed++;
-        console.error(`Error sending sleep command to ${unit.tv_id}:`, error);
-        adbResults.push({
-          success: false,
-          ip: unit.ip_address,
+        console.error(`❌ Error processing TV ${unit.tv_id}:`, error);
+        logError(error, null, { tv_id: unit.tv_id });
+        
+        results.push({
           tv_id: unit.tv_id,
+          success: false,
           message: error.message || "Command failed",
-          error: error
+          error: error.stack
         });
       }
     }
@@ -457,16 +492,20 @@ router.get("/sleep", async (req, res) => {
       summary: {
         total_units: totalProcessed,
         success: totalSuccess,
-        failed: totalFailed
+        failed: totalFailed,
+        success_rate: totalProcessed > 0 ? 
+          `${((totalSuccess / totalProcessed) * 100).toFixed(1)}%` : '0%'
       },
-      adb_results: adbResults
+      results: results
     });
 
   } catch (error) {
     console.error('❌ Error in /sleep endpoint:', error);
+    logError(error);
+    
     return res.status(500).json({
       success: false,
-      message: "Terjadi kesalahan internal saat memproses sleep.",
+      message: "Terjadi kesalahan internal.",
       error: error.message
     });
   }
@@ -503,8 +542,8 @@ router.post('/tv/command', verifyToken, (req, res) => {
   }
 
   try {
-    ws.send(JSON.stringify({ type: 'command', tvId, command }));
-    console.log(`📤 Sent command ${command} to ${tvId}`);
+    const tester = ws.send(JSON.stringify({ type: 'command', tvId, command }));
+    console.log(`tester`, tester);
     logInfo(`TV Command sent`, { tvId, command, userId: req.user?.userId });
 
     res.json({ 
