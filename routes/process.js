@@ -28,12 +28,12 @@ try {
 }
 
 // ✅ Helper: Wait for TV response (Promise-based, non-blocking)
-const waitForTVResponse = (tvResponses, tvId, command, timeout = 5000) => {
+const waitForTVResponse = (tvResponses, tv_id, command, timeout = 5000) => {
   return new Promise((resolve) => {
     const startTime = Date.now();
     
     const checkInterval = setInterval(() => {
-      const response = tvResponses.get(tvId);
+      const response = tvResponses.get(tv_id);
       
       if (response && response.command === command) {
         clearInterval(checkInterval);
@@ -47,42 +47,42 @@ const waitForTVResponse = (tvResponses, tvId, command, timeout = 5000) => {
 };
 
 // ✅ Helper: Send command to TV with error handling
-const sendTVCommand = async (ws, tvId, command, target = 'control') => {
+const sendTVCommand = async (ws, tv_id, command, target = 'control') => {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    throw new Error(`TV ${tvId} tidak terhubung`);
+    throw new Error(`TV ${tv_id} tidak terhubung`);
   }
 
   try {
     // ✅ Pastikan semua field ada nilainya
     const payload = {
       type: 'command',
-      tvId: String(tvId), // ✅ Konversi ke string
+      tv_id: String(tv_id), // ✅ Konversi ke string
       command: parseInt(command), // ✅ Konversi ke number
       target: String(target),
       timestamp: new Date().toISOString()
     };
 
     // ✅ Log payload sebelum dikirim
-    console.log(`📤 Sending payload to TV ${tvId}:`, JSON.stringify(payload));
+    console.log(`📤 Sending payload to TV ${tv_id}:`, JSON.stringify(payload));
     
     const jsonString = JSON.stringify(payload);
     ws.send(jsonString);
     
-    console.log(`✅ Command ${command} sent to TV ${tvId}`);
-    logInfo('TV command sent', { tvId, command, target, payloadSent: payload });
+    console.log(`✅ Command ${command} sent to TV ${tv_id}`);
+    logInfo('TV command sent', { tv_id, command, target, payloadSent: payload });
     
     return true;
   } catch (error) {
-    console.error(`❌ Error sending command to TV ${tvId}:`, error);
+    console.error(`❌ Error sending command to TV ${tv_id}:`, error);
     console.error('Error details:', {
-      tvId,
+      tv_id,
       command,
       target,
       wsReadyState: ws?.readyState,
       errorMessage: error.message,
       errorStack: error.stack
     });
-    logError(error, null, { tvId, command });
+    logError(error, null, { tv_id, command });
     throw error;
   }
 };
@@ -527,13 +527,13 @@ router.get("/sleep", async (req, res) => {
 
 // ✅ IMPROVED: Kirim perintah ke TV tertentu via WebSocket
 router.post('/tv/command', verifyToken, async (req, res) => {
-  const { tvId, command, target, waitResponse } = req.body;
+  const { tv_id, command, target, waitResponse } = req.body;
 
   // Validation
-  if (!tvId || !command) {
+  if (!tv_id || !command) {
     return res.status(400).json({ 
       success: false,
-      message: 'tvId and command are required'
+      message: 'tv_id and command are required'
     });
   }
 
@@ -548,22 +548,22 @@ router.post('/tv/command', verifyToken, async (req, res) => {
     });
   }
 
-  const ws = tvConnections.get(tvId);
+  const ws = tvConnections.get(tv_id);
   
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     return res.status(404).json({ 
       success: false,
       message: 'TV not connected or unavailable',
-      tvId 
+      tv_id 
     });
   }
 
   try {
     // ✅ Gunakan helper function sendTVCommand
-    await sendTVCommand(ws, tvId, command, target || 'manual_command');
+    await sendTVCommand(ws, tv_id, command, target || 'manual_command');
     
     logInfo('TV Command sent', { 
-      tvId, 
+      tv_id, 
       command, 
       target: target || 'manual_command',
       userId: req.user?.userId 
@@ -571,26 +571,26 @@ router.post('/tv/command', verifyToken, async (req, res) => {
 
     // ✅ Optional: Tunggu response dari TV
     if (waitResponse === true || waitResponse === 'true') {
-      console.log(`⏳ Waiting for response from TV ${tvId}...`);
+      console.log(`⏳ Waiting for response from TV ${tv_id}...`);
       
       const timeout = parseInt(req.body.timeout) || 5000; // Default 5 detik
       const tvResponse = await waitForTVResponse(
         tvResponses, 
-        tvId, 
+        tv_id, 
         command, 
         timeout
       );
 
       if (tvResponse) {
         // Clear response setelah digunakan
-        tvResponses.delete(tvId);
+        tvResponses.delete(tv_id);
 
         if (tvResponse.status === 'success') {
           return res.json({
             success: true,
-            message: `Command ${command} executed successfully on ${tvId}`,
+            message: `Command ${command} executed successfully on ${tv_id}`,
             data: {
-              tvId,
+              tv_id,
               command,
               target: target || 'manual_command',
               response: {
@@ -605,7 +605,7 @@ router.post('/tv/command', verifyToken, async (req, res) => {
             success: false,
             message: `Command execution failed: ${tvResponse.message || tvResponse.error}`,
             data: {
-              tvId,
+              tv_id,
               command,
               response: {
                 status: tvResponse.status,
@@ -619,9 +619,9 @@ router.post('/tv/command', verifyToken, async (req, res) => {
         // Timeout
         return res.status(408).json({
           success: false,
-          message: `TV ${tvId} tidak merespon dalam ${timeout}ms`,
+          message: `TV ${tv_id} tidak merespon dalam ${timeout}ms`,
           data: {
-            tvId,
+            tv_id,
             command,
             timeout: true
           }
@@ -632,9 +632,9 @@ router.post('/tv/command', verifyToken, async (req, res) => {
     // ✅ Tanpa tunggu response (fire and forget)
     res.json({ 
       success: true, 
-      message: `Command ${command} sent to ${tvId}`,
+      message: `Command ${command} sent to ${tv_id}`,
       data: { 
-        tvId, 
+        tv_id, 
         command,
         target: target || 'manual_command',
         note: 'Command sent without waiting for response'
@@ -642,8 +642,8 @@ router.post('/tv/command', verifyToken, async (req, res) => {
     });
 
   } catch (error) {
-    console.error(`❌ Error sending command to ${tvId}:`, error);
-    logError(error, req, { tvId, command });
+    console.error(`❌ Error sending command to ${tv_id}:`, error);
+    logError(error, req, { tv_id, command });
     
     res.status(500).json({
       success: false,
@@ -669,12 +669,12 @@ router.get('/tv/active', verifyToken, (req, res) => {
     const connectedTVs = [];
     const now = new Date();
 
-    for (const [tvId, ws] of tvConnections.entries()) {
+    for (const [tv_id, ws] of tvConnections.entries()) {
       const isConnected = ws.readyState === WebSocket.OPEN;
-      const status = tvStatus?.[tvId];
+      const status = tvStatus?.[tv_id];
       
       connectedTVs.push({
-        id: tvId,
+        id: tv_id,
         connected: isConnected,
         state: isConnected ? 'ONLINE' : 'OFFLINE',
         lastPing: status?.lastPing || null,
@@ -717,23 +717,23 @@ router.get('/tv/active', verifyToken, (req, res) => {
 });
 
 // ✅ IMPROVED: TV status detail
-router.get('/tv/status/:tvId', verifyToken, (req, res) => {
+router.get('/tv/status/:tv_id', verifyToken, (req, res) => {
   try {
-    const { tvId } = req.params;
+    const { tv_id } = req.params;
     const tvConnections = req.app.locals.tvConnections;
     const tvStatus = req.app.locals.tvStatus;
     const tvResponses = req.app.locals.tvResponses;
     
-    const ws = tvConnections?.get(tvId);
-    const status = tvStatus?.[tvId];
-    const lastResponse = tvResponses?.get(tvId);
+    const ws = tvConnections?.get(tv_id);
+    const status = tvStatus?.[tv_id];
+    const lastResponse = tvResponses?.get(tv_id);
     const now = new Date();
     
     if (!ws && !status) {
       return res.status(404).json({
         success: false,
         message: 'TV not found',
-        tvId
+        tv_id
       });
     }
 
@@ -744,7 +744,7 @@ router.get('/tv/status/:tvId', verifyToken, (req, res) => {
     res.json({
       success: true,
       data: {
-        tvId,
+        tv_id,
         connected: isOnline,
         status: isOnline ? 'ONLINE' : 'OFFLINE',
         lastPing: status?.lastPing || null,
