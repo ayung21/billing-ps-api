@@ -4,11 +4,15 @@ const WebSocket = require('ws');
 const app = express();
 const server = http.createServer(app);
 
+// ✅ Import dependencies yang hilang
+const { sequelize, testConnection } = require('./config/database');
+const { logError, logInfo } = require('./middleware/logger');
+
 // ✅ Initialize WebSocket dengan proper config
 const wss = new WebSocket.Server({ 
   server,
-  clientTracking: true, // ✅ Track clients
-  perMessageDeflate: false // ✅ Disable compression untuk stability
+  clientTracking: true,
+  perMessageDeflate: false
 });
 
 // ✅ Global storage untuk TV connections
@@ -23,7 +27,7 @@ const cleanupTVConnection = (tvId) => {
   const existingWs = app.locals.tvConnections.get(tvId);
   if (existingWs) {
     try {
-      existingWs.terminate(); // ✅ Force close old connection
+      existingWs.terminate();
     } catch (error) {
       console.error(`Error terminating old connection for ${tvId}:`, error);
     }
@@ -76,7 +80,6 @@ wss.on('connection', (ws, req) => {
   let pongReceived = true;
 
   const startPingInterval = () => {
-    // ✅ Clear existing timer
     if (pingTimer) {
       clearInterval(pingTimer);
     }
@@ -101,7 +104,6 @@ wss.on('connection', (ws, req) => {
     }, PING_INTERVAL);
   };
 
-  // ✅ Start ping interval
   startPingInterval();
 
   // ✅ Handle pong response
@@ -109,7 +111,6 @@ wss.on('connection', (ws, req) => {
     pongReceived = true;
     console.log(`🏓 Pong received from TV ${tvId}`);
     
-    // ✅ Update last ping time
     if (app.locals.tvStatus[tvId]) {
       app.locals.tvStatus[tvId].lastPing = new Date();
     }
@@ -121,7 +122,6 @@ wss.on('connection', (ws, req) => {
       const data = JSON.parse(message.toString());
       console.log(`📨 Message from TV ${tvId}:`, data);
 
-      // ✅ Handle response dari TV
       if (data.type === 'response') {
         app.locals.tvResponses.set(tvId, {
           command: data.command,
@@ -133,7 +133,6 @@ wss.on('connection', (ws, req) => {
         console.log(`✅ Response from TV ${tvId} saved`);
       }
 
-      // ✅ Handle ping dari TV client (optional)
       if (data.type === 'ping') {
         const pongPayload = {
           type: 'pong',
@@ -144,7 +143,6 @@ wss.on('connection', (ws, req) => {
         console.log(`🏓 Pong sent to TV ${tvId}`);
       }
 
-      // ✅ Update last ping time
       if (app.locals.tvStatus[tvId]) {
         app.locals.tvStatus[tvId].lastPing = new Date();
       }
@@ -158,23 +156,18 @@ wss.on('connection', (ws, req) => {
   // ✅ Handle errors
   ws.on('error', (error) => {
     console.error(`❌ WebSocket error for TV ${tvId}:`, error);
-    
-    // ✅ Jangan auto-reconnect di sini, biar TV client yang handle
   });
 
   // ✅ Handle disconnect
   ws.on('close', (code, reason) => {
     console.log(`📡 TV ${tvId} disconnected. Code: ${code}, Reason: ${reason}`);
     
-    // ✅ Cleanup
     if (pingTimer) {
       clearInterval(pingTimer);
       pingTimer = null;
     }
     
-    // ✅ Remove dari storage
     cleanupTVConnection(tvId);
-    
     console.log(`🧹 TV ${tvId} cleaned up successfully`);
   });
 
@@ -195,7 +188,7 @@ wss.on('connection', (ws, req) => {
 });
 
 // ✅ Cleanup stale connections periodically
-setInterval(() => {
+const cleanupInterval = setInterval(() => {
   const now = new Date();
   const STALE_THRESHOLD = 60000; // 60 detik
 
@@ -207,36 +200,25 @@ setInterval(() => {
       cleanupTVConnection(tvId);
     }
   }
-}, 30000); // Check setiap 30 detik
-
-// ✅ Graceful shutdown
-const gracefulShutdown = () => {
-  console.log('🛑 Server shutting down...');
-  
-  // Close all WebSocket connections
-  wss.clients.forEach((ws) => {
-    ws.close(1001, 'Server shutting down');
-  });
-  
-  // Clear all timers
-  app.locals.tvConnections.clear();
-  app.locals.tvResponses.clear();
-  app.locals.tvStatus = {};
-  
-  server.close(() => {
-    console.log('✅ Server closed successfully');
-    process.exit(0);
-  });
-};
-
-process.on('SIGTERM', gracefulShutdown);
-process.on('SIGINT', gracefulShutdown);
+}, 30000);
 
 // ============================
 // 🔧 EXPRESS SETUP
 // ============================
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// CORS middleware (optional)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -246,7 +228,7 @@ const promoRoutes = require('./routes/promo');
 const produkRoutes = require('./routes/produk');
 const memberRoutes = require('./routes/member');
 const transaksiRoutes = require('./routes/transaksi');
-const _process = require('./routes/process');
+const processRoutes = require('./routes/process');
 
 // Use routes
 app.use('/api/auth', authRoutes);
@@ -256,7 +238,7 @@ app.use('/api/promo', promoRoutes);
 app.use('/api/produk', produkRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/transaksi', transaksiRoutes);
-app.use('/api/processcode', _process);
+app.use('/api/process', processRoutes);
 
 // ============================
 // 🌐 API ENDPOINTS
@@ -265,7 +247,7 @@ app.use('/api/processcode', _process);
 app.get('/', (req, res) => {
   res.json({
     message: 'Billing PS API Server + WebSocket is running!',
-    websocket: 'ws://localhost:' + (process.env.PORT || 3000) + '/ws',
+    websocket: `ws://localhost:${process.env.PORT || 3000}`,
     status: 'OK',
     timestamp: new Date().toISOString(),
     stats: {
@@ -294,10 +276,9 @@ app.get('/ping', (req, res) => {
   };
 
   console.log(`[HTTP PING] TV: ${id}`);
-  tvStatusLogger.logPing(id, ipAddress, 'HTTP');
   
   if (wasOffline) {
-    tvStatusLogger.logTVOnline(id);
+    console.log(`✅ TV ${id} is now online`);
   }
 
   res.json({
@@ -322,8 +303,6 @@ app.get('/status', (req, res) => {
       lastPing: status.lastPing.toISOString(),
       secondsSinceLastPing: Math.floor(timeSinceLastPing / 1000),
       ipAddress: status.ipAddress,
-      modelTv: status.modelTv,
-      currentStatus: status.currentStatus,
       wsConnected: app.locals.tvConnections.has(tv_id)
     };
   }
@@ -350,6 +329,7 @@ app.use((err, req, res, next) => {
   logError(err, req);
   
   res.status(500).json({
+    success: false,
     message: 'Something went wrong!',
     error: process.env.NODE_ENV === 'development' ? err.message : 'Internal Server Error'
   });
@@ -359,11 +339,17 @@ app.use((err, req, res, next) => {
 // 🧱 DATABASE INIT
 // ============================
 (async () => {
-  const connected = await testConnection();
-  if (connected) {
-    await sequelize.sync({ force: false });
-    console.log('✅ Database synchronized.');
-    logInfo('Database synchronized successfully');
+  try {
+    const connected = await testConnection();
+    if (connected) {
+      await sequelize.sync({ force: false });
+      console.log('✅ Database synchronized.');
+      logInfo('Database synchronized successfully');
+    } else {
+      console.error('❌ Database connection failed, server starting without database');
+    }
+  } catch (error) {
+    console.error('❌ Database initialization error:', error);
   }
 })();
 
@@ -373,34 +359,50 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📡 WebSocket server ready`);
+  console.log(`📡 WebSocket server ready on ws://localhost:${PORT}`);
+  console.log(`🌐 API available at http://localhost:${PORT}`);
 });
 
 // ============================
-// 🛑 GRACEFUL SHUTDOWN
+// 🛑 GRACEFUL SHUTDOWN (hanya 1x)
 // ============================
-const shutdown = () => {
-  console.log('Shutting down gracefully...');
+const gracefulShutdown = () => {
+  console.log('🛑 Server shutting down...');
   
-  clearInterval(heartbeatInterval);
-  clearInterval(cleanupInterval);
+  // Clear intervals
+  if (cleanupInterval) {
+    clearInterval(cleanupInterval);
+  }
   
   // Close all WebSocket connections
-  app.locals.tvConnections.forEach((ws, tv_id) => {
-    ws.close(1000, 'Server shutting down');
+  wss.clients.forEach((ws) => {
+    ws.close(1001, 'Server shutting down');
   });
   
+  // Clear all maps
+  app.locals.tvConnections.clear();
+  app.locals.tvResponses.clear();
+  app.locals.tvStatus = {};
+  
+  // Close WebSocket server
   wss.close(() => {
-    console.log('WebSocket server closed');
+    console.log('✅ WebSocket server closed');
   });
   
+  // Close HTTP server
   server.close(() => {
-    console.log('HTTP server closed');
+    console.log('✅ HTTP server closed');
     process.exit(0);
   });
+  
+  // Force exit after 10 seconds
+  setTimeout(() => {
+    console.error('⚠️ Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
 };
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 
 module.exports = { app, server, wss };
