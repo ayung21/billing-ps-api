@@ -2,9 +2,8 @@ const express = require('express');
 const { verifyToken, verifyAdmin, verifyUser } = require('../middleware/auth');
 const { sequelize } = require('../config/database');
 const { Op } = require('sequelize');
-const { exec } = require("child_process");
-const history_units = require('../models/history_units');
-const { type } = require('os');
+const { logError, logInfo } = require('../middleware/logger');
+const WebSocket = require('ws');
 
 const router = express.Router();
 
@@ -32,19 +31,128 @@ try {
   console.error('❌ Error loading transaksi models:', error.message);
 }
 
+const waitForTVResponse = (tvResponses, tv_id, command, timeout = 5000) => {
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    let checkCount = 0;
+    const expectedCommand = parseInt(command); // ✅ Normalize ke number
+    
+    console.log(`⏳ Waiting for response from TV ${tv_id}, command: ${expectedCommand}, timeout: ${timeout}ms`);
+    
+    const checkInterval = setInterval(() => {
+      checkCount++;
+      const response = tvResponses.get(tv_id);
+      const elapsed = Date.now() - startTime;
+      
+      // ✅ Debug log setiap 1 detik (10 checks x 100ms)
+      if (checkCount % 10 === 0) {
+        console.log(`⏳ Still waiting for TV ${tv_id} (${elapsed}ms / ${timeout}ms)...`);
+        if (response) {
+          console.log(`   Found response with command: ${response.command} (expected: ${expectedCommand})`);
+          console.log(`   Status: ${response.status}`);
+        } else {
+          console.log(`   No response in map yet`);
+        }
+      }
+      
+      // ✅ Check response dengan command matching
+      if (response) {
+        const responseCommand = parseInt(response.command);
+        
+        // ✅ Match by command
+        if (responseCommand === expectedCommand) {
+          clearInterval(checkInterval);
+          console.log(`✅ Response matched for TV ${tv_id}!`);
+          console.log(`   Command: ${responseCommand}`);
+          console.log(`   Status: ${response.status}`);
+          console.log(`   Elapsed: ${elapsed}ms`);
+          resolve(response);
+          return;
+        } else {
+          // Command tidak match
+          if (checkCount % 10 === 0) {
+            console.log(`⚠️ Response command mismatch: expected ${expectedCommand}, got ${responseCommand}`);
+          }
+        }
+      }
+      
+      // ✅ Timeout check
+      if (elapsed >= timeout) {
+        clearInterval(checkInterval);
+        
+        console.warn(`⏱️ TIMEOUT: TV ${tv_id} tidak merespon dalam ${timeout}ms`);
+        console.warn(`   Expected command: ${expectedCommand}`);
+        console.warn(`   Total checks: ${checkCount}`);
+        console.warn(`   Last response in map:`, response || 'null');
+        
+        if (response) {
+          console.warn(`   ⚠️ Response ada tapi command tidak match (${response.command} vs ${expectedCommand})`);
+        }
+        
+        resolve(null); // Timeout
+      }
+    }, 100); // Check setiap 100ms
+  });
+};
+
+// ✅ IMPROVED: Send command to TV with error handling
+const sendTVCommand = async (ws, tvId, command, target = 'control') => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    throw new Error(`TV ${tvId} tidak terhubung`);
+  }
+
+  try {
+    // ✅ Format payload dengan tv_id (snake_case) untuk compatibility
+    const payload = {
+      type: 'command',
+      tv_id: String(tvId),  // ✅ Primary field: snake_case
+      tvId: String(tvId),   // ✅ Backup field: camelCase
+      command: parseInt(command),
+      target: String(target),
+      timestamp: new Date().toISOString()
+    };
+
+    // ✅ Log payload sebelum dikirim
+    console.log(`📤 Sending payload to TV ${tvId}:`, JSON.stringify(payload));
+    
+    const jsonString = JSON.stringify(payload);
+    
+    // ✅ Tambahkan error callback
+    ws.send(jsonString, (error) => {
+      if (error) {
+        console.error(`❌ WebSocket send error for TV ${tvId}:`, error);
+      }
+    });
+    
+    console.log(`✅ Command ${command} sent to TV ${tvId}`);
+    logInfo('TV command sent', { tvId, command, target, payloadSent: payload });
+    
+    return true;
+  } catch (error) {
+    console.error(`❌ Error sending command to TV ${tvId}:`, error);
+    console.error('Error details:', {
+      tvId,
+      command,
+      target,
+      wsReadyState: ws?.readyState,
+      errorMessage: error.message,
+      errorStack: error.stack
+    });
+    logError(error, null, { tvId, command });
+    throw error;
+  }
+};
+
 // Generate transaction code with sequential number
 const generateTransactionCode = async () => {
   const now = new Date();
-  const year = now.getFullYear().toString(); // 4 digit tahun
-  const month = (now.getMonth() + 1).toString().padStart(2, '0'); // 2 digit bulan
-  const day = now.getDate().toString().padStart(2, '0'); // 2 digit hari
+  const year = now.getFullYear().toString();
+  const month = (now.getMonth() + 1).toString().padStart(2, '0');
 
-  // Get today's date range for filtering
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
   const endOfDay = new Date(now.getFullYear(), now.getMonth(), 31, 23, 59, 59);
 
   try {
-    // Count today's transactions to get next sequential number
     const todayTransactionCount = await Transaksi.count({
       where: {
         createdAt: {
@@ -53,98 +161,37 @@ const generateTransactionCode = async () => {
       }
     });
 
-    // Next sequential number (starting from 0001)
     const sequentialNumber = (todayTransactionCount + 1).toString().padStart(4, '0');
-
-    // Format: TRX + YYMMDD + SSSS (SSSS = Sequential number)
-    // Contoh: TRX2512190001, TRX2512190002, TRX2512190003
     return `TRX${year}${month}${sequentialNumber}`;
   } catch (error) {
     console.error('Error generating transaction code:', error);
-    // Fallback to timestamp-based code if database query fails
     const timestamp = Date.now().toString().slice(-3);
-    return `TRX${year}${month}${day}${timestamp}`;
+    return `TRX${year}${month}${timestamp}`;
   }
 };
 
-// Ubah executeAdbControl menjadi Promise-based function
-const executeAdbControl = (ip, adbCommand) => {
-  return new Promise((resolve, reject) => {
-    const fullAdbAddress = `${ip}:5555`;
-    const connectCmd = `adb connect ${fullAdbAddress}`;
-console.log('Connecting to ADB with command:', connectCmd);
-    exec(connectCmd, { timeout: 10000 }, (connectError, connectStdout, connectStderr) => {
-
-      if (connectError || connectStderr.includes("unable to connect")) {
-        console.log('❌ Connection failed');
-        return reject({
-          success: false,
-          message: `❌ Gagal terhubung ke TV (${ip}).`,
-          details: "Pastikan TV menyala, Network Debugging/ADB aktif, dan tidak terhalang firewall/VPN.",
-          adb_output: connectStderr.trim() || connectStdout.trim()
-        });
-      }
-
-      // 2. KONEKSI BERHASIL, jalankan PERINTAH KONTROL
-      const controlCmd = `adb -s ${fullAdbAddress} ${adbCommand}`;
-      console.log('Executing control command:', controlCmd);
-      exec(controlCmd, (controlError, controlStdout, controlStderr) => {
-        // Opsional: Coba putuskan koneksi setelah selesai
-        exec(`adb disconnect ${fullAdbAddress}`);
-
-        if (controlError) {
-          console.log('❌ Control command failed');
-          return reject({
-            success: false,
-            message: `⚠️ Terhubung, tetapi perintah kontrol gagal dijalankan.`,
-            error: controlStderr.trim(),
-            command_executed: adbCommand
-          });
-        }
-
-        console.log('✅ Control command success');
-        // 3. KONTROL BERHASIL
-        resolve({
-          success: true,
-          ip: ip,
-          message: `✅ Perintah '${adbCommand}' berhasil dikirim ke TV.`,
-          command_executed: adbCommand,
-          output: controlStdout.trim()
-        });
-      });
-    });
-  });
-};// Helper function untuk group items by token (taruh di atas router.get)
 const groupItemsByToken = (items) => {
   return Object.values(
     items.reduce((acc, item) => {
       const key = item.token;
       
       if (!acc[key]) {
-        // Item pertama dengan token ini
         acc[key] = { ...item };
       } else {
-        // Item duplicate, sum values
         acc[key].quantity += item.quantity;
         
-        // Sum hours (untuk unit)
         if (item.hours !== undefined) {
           acc[key].hours = (acc[key].hours || 0) + item.hours;
         }
         
-        // Sum total
         acc[key].total += item.total;
-        
-        // Update price = total
         acc[key].price = acc[key].total;
         
-        // Sum discount_nominal untuk promo
         if (acc[key].promo_detail && item.promo_detail) {
           const currentDiscount = parseFloat(acc[key].promo_detail.discount_nominal) || 0;
           const newDiscount = parseFloat(item.promo_detail.discount_nominal) || 0;
           acc[key].promo_detail.discount_nominal = currentDiscount + newDiscount;
           
-          // Sum hours di promo_detail
           if (item.promo_detail.hours !== undefined) {
             acc[key].promo_detail.hours = (acc[key].promo_detail.hours || 0) + item.promo_detail.hours;
           }
@@ -157,135 +204,388 @@ const groupItemsByToken = (items) => {
 };
 
 // Get all transactions (protected)
-router.get('/', verifyToken, async (req, res) => {
+router.post('/', verifyToken, async (req, res) => {
+  const dbTransaction = await sequelize.transaction();
+
   try {
-    if (!Transaksi) {
+    if (!Transaksi || !TransaksiDetail) {
       return res.status(500).json({
         success: false,
-        message: 'Transaksi model not available'
+        message: 'Transaksi models not available'
       });
     }
 
-    const { status, memberid, limit = 50, offset = 0, include_details = false } = req.query;
-    let cabangaccess = [];
-    let whereClause = {};
+    const {
+      memberid,
+      cabang_id,
+      customer_name,
+      customer_phone,
+      total_price,
+      rental_price,
+      status = '1',
+      products,
+      unit_token,
+      promo_token,
+      duration
+    } = req.body;
 
-    const _access = await Access.findAll({
-      where: {
-        userId: req.user.id  // ✅ Fixed: pakai req.user.id
-      }
-    });
+    // ✅ Get WebSocket connections
+    const tvConnections = req.app.locals.tvConnections;
+    const tvResponses = req.app.locals.tvResponses;
 
-    for (const __access of _access) {
-      cabangaccess.push(__access.cabangid);
+    if (!tvConnections || !tvResponses) {
+      await dbTransaction.rollback();
+      return res.status(500).json({
+        success: false,
+        message: 'WebSocket services not available'
+      });
     }
 
-    whereClause.cabangid = { [Op.in]: cabangaccess };
+    // Validation
+    if (!customer_name) {
+      await dbTransaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Customer name is required'
+      });
+    }
 
-    const includeOptions = [
-      {
-        model: TransaksiDetail,
-        as: 'details',
-        required: false,
-        where: { status: 1 },
-        include: [
-          {
-            model: Unit,
-            as: 'unit',
-            required: false
-          },
-          {
-            model: Promo,
-            as: 'promo',
-            required: false
-          },
-          {
-            model: Produk,
-            as: 'produk',
-            required: false
-          }
-        ]
+    // Cek unit sedang digunakan
+    const _unit = await sequelize.query(`
+      SELECT * FROM transaksi_detail td
+      JOIN transaksi t ON t.code = td.code
+      WHERE td.unit_token = :unit_token
+      AND t.status = 1
+    `, {
+      replacements: { unit_token },
+      type: sequelize.QueryTypes.SELECT,
+    });
+
+    if (_unit.length > 0) {
+      await dbTransaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Unit/PS sedang digunakan'
+      });
+    }
+
+    const _promo = promo_token ? await Promo.findOne({
+      where: { token: promo_token, status: 1 }
+    }) : null;
+
+    // Validate member if provided
+    if (memberid && Member) {
+      const member = await Member.findOne({
+        where: { id: parseInt(memberid), status: 1 }
+      });
+
+      if (!member) {
+        await dbTransaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid member ID or member is inactive'
+        });
       }
-    ];
+    }
 
-    const transactions = await Transaksi.findAndCountAll({
-      where: whereClause,
-      include: includeOptions,
-      limit: parseInt(limit),
-      offset: parseInt(offset),
-      order: [['status', 'DESC']]
-    });
+    // Generate transaction code
+    let transactionCode;
+    let codeExists = true;
+    let attempts = 0;
 
-    // Mapping hasil dengan grouping
-    const mappedData = transactions.rows.map(trx => {
-      // Extract produk items
-      const produkItems = (trx.details || [])
-        .filter(d => d.produk)
-        .map(d => ({
-          product_id: d.id,
-          token: d.produk_token || d.token || null,
-          name: d.produk?.name || d.name,
-          quantity: d.qty || d.quantity || 1,
-          price: d.harga || d.price || 0,
-          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
-          produk_detail: d.produk
-        }));
-      
-      // Extract unit items
-      const unitItems = (trx.details || [])
-        .filter(d => d.unit)
-        .map(d => ({
-          unit_id: d.id,
-          token: d.unit_token || d.token || null,
-          name: d.unit?.name || d.name,
-          quantity: d.qty || d.quantity || 1,
-          hours: d.hours || 1,
-          price: d.harga || d.price || 0,
-          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
-          unit_detail: d.unit
-        }));
-      
-      // Extract promo items
-      const promoItems = (trx.details || [])
-        .filter(d => d.promo)
-        .map(d => ({
-          promo_id: d.id,
-          token: d.promo_token || d.token || null,
-          name: d.promo?.name || d.name,
-          quantity: d.qty || d.quantity || 1,
-          price: d.harga || d.price || 0,
-          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
-          promo_detail: d.promo
-        }));
-      
-      return {
-        code: trx.code,
-        memberid: trx.memberid,
-        customer: trx.customer,
-        telepon: trx.telepon,
-        grandtotal: trx.grandtotal,
-        cabangid: trx.cabangid,
-        status: trx.status,
-        created_by: trx.created_by,
-        updated_by: trx.updated_by,
-        createdAt: trx.createdAt,
-        updatedAt: trx.updatedAt,
-        produk: groupItemsByToken(produkItems),   // ✅ Apply grouping
-        unit: groupItemsByToken(unitItems),       // ✅ Apply grouping
-        promo: groupItemsByToken(promoItems)      // ✅ Apply grouping
+    while (codeExists && attempts < 10) {
+      transactionCode = await generateTransactionCode();
+      const existing = await Transaksi.findOne({
+        where: { code: transactionCode }
+      });
+      codeExists = !!existing;
+      attempts++;
+
+      if (codeExists) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+
+    if (codeExists) {
+      await dbTransaction.rollback();
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to generate unique transaction code'
+      });
+    }
+
+    // Create main transaction
+    const newTransaction = await Transaksi.create({
+      code: transactionCode,
+      memberid: memberid ? parseInt(memberid) : null,
+      customer: customer_name || null,
+      telepon: customer_phone || null,
+      cabangid: cabang_id ? parseInt(cabang_id) : null,
+      qty: 1,
+      grandtotal: total_price ? total_price.toString() : '0',
+      status: 1,
+      created_by: req.user?.userId || null,
+      updated_by: req.user?.userId || null
+    }, { transaction: dbTransaction });
+
+    // Create product details
+    for (let i = 0; i < products.length; i++) {
+      const product = products[i];
+
+      const check = await Produk.findOne({
+        where: { token: product.product_token }
+      });
+
+      if (check.stok < product.quantity) {
+        await dbTransaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Product ${i} is out of stock`
+        });
+      }
+
+      await check.update({ 
+        stok: check.stok - product.quantity 
+      }, { transaction: dbTransaction });
+
+      const productData = {
+        code: transactionCode,
+        name: product.name,
+        produk_token: product.product_token ?? null,
+        qty: product.quantity ? parseInt(product.quantity) : null,
+        harga: product.price ? parseInt(product.price) : 0,
+        total: parseInt(product.price) * parseInt(product.quantity),
+        status: 1,
+        created_by: req.user?.userId || null,
+        updated_by: req.user?.userId || null
       };
+
+      await TransaksiDetail.create(productData, { transaction: dbTransaction });
+    }
+
+    // Create rental detail
+    const rentalData = {
+      code: transactionCode,
+      name: promo_token ? _promo.name : null,
+      promo_token: promo_token ?? null,
+      unit_token: unit_token ?? null,
+      hours: duration ? parseInt(duration) : null,
+      harga: rental_price ? parseInt(rental_price) : 0,
+      total: rental_price ? parseInt(rental_price) : 0,
+      status: 1,
+      created_by: req.user?.userId || null,
+      updated_by: req.user?.userId || null
+    };
+
+    await TransaksiDetail.create(rentalData, { transaction: dbTransaction });
+
+    // ✅ WEBSOCKET CONTROL - POWER ON TV
+    console.log('Getting TV info for unit token:', unit_token);
+    const getTV = await sequelize.query(`
+      SELECT b.tv_id, c.command FROM units u 
+      JOIN brandtv b ON b.id = u.brandtvid
+      JOIN codetv c ON c.id = b.codetvid
+      WHERE u.status = 1 AND c.desc = 'on' AND u.token = ?
+    `, {
+      replacements: [unit_token],
+      type: sequelize.QueryTypes.SELECT,
     });
 
-    res.json({
-      success: true,
-      data: mappedData,
-      total: transactions.count,
-      limit: parseInt(limit),
-      offset: parseInt(offset)
-    });
+    if (!getTV || getTV.length === 0) {
+      await dbTransaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'TV configuration not found for this unit'
+      });
+    }
+
+    const tvInfo = getTV[0];
+    const ws = tvConnections.get(tvInfo.tv_id);
+
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      await dbTransaction.rollback();
+      return res.status(503).json({
+        success: false,
+        message: `TV ${tvInfo.tv_id} tidak terhubung`,
+        debug: {
+          tv_id: tvInfo.tv_id,
+          wsExists: !!ws,
+          wsReadyState: ws?.readyState
+        }
+      });
+    }
+
+    console.log(`Sending POWER ON command to TV: ${tvInfo.tv_id}, command: ${tvInfo.command}`);
+
+    try {
+      // ✅ PERBAIKAN: Clear old response sebelum kirim command baru
+      if (tvResponses.has(tvInfo.tv_id)) {
+        console.log(`🧹 Clearing old response for TV ${tvInfo.tv_id}`);
+        tvResponses.delete(tvInfo.tv_id);
+      }
+
+      // ✅ Kirim command
+      await sendTVCommand(ws, tvInfo.tv_id, tvInfo.command, 'power_on');
+
+      // ✅ Tunggu response (Promise-based, non-blocking)
+      console.log(`⏳ Menunggu response dari TV ${tvInfo.tv_id}...`);
+      const tvResponse = await waitForTVResponse(
+        tvResponses, 
+        tvInfo.tv_id, 
+        tvInfo.command, 
+        10000 // 10 detik timeout
+      );
+
+      // ✅ PERBAIKAN: Evaluasi response dengan handling lengkap
+      if (tvResponse) {
+        // Clear response setelah digunakan
+        tvResponses.delete(tvInfo.tv_id);
+
+        if (tvResponse.status === 'success') {
+          console.log(`✅ TV ${tvInfo.tv_id} berhasil dinyalakan`);
+
+          // WebSocket berhasil, commit transaksi
+          await dbTransaction.commit();
+
+          // Fetch complete transaction
+          const includeOptions = [
+            {
+              model: TransaksiDetail,
+              as: 'details',
+              required: false,
+              include: [
+                { model: Unit, as: 'unit', required: false },
+                { model: Promo, as: 'promo', required: false },
+                { model: Produk, as: 'produk', required: false }
+              ]
+            }
+          ];
+
+          const trx = await Transaksi.findOne({
+            where: { code: transactionCode },
+            include: includeOptions
+          });
+
+          const mappedData = {
+            code: trx.code,
+            memberid: trx.memberid,
+            customer: trx.customer,
+            telepon: trx.telepon,
+            grandtotal: trx.grandtotal,
+            cabangid: trx.cabangid,
+            status: trx.status,
+            created_by: trx.created_by,
+            updated_by: trx.updated_by,
+            createdAt: trx.createdAt,
+            updatedAt: trx.updatedAt,
+            produk: (trx.details || [])
+              .filter(d => d.produk)
+              .map(d => ({
+                product_id: d.id,
+                token: d.produk_token || d.token || null,
+                name: d.produk?.name || d.name,
+                quantity: d.qty || d.quantity || 1,
+                price: d.harga || d.price || 0,
+                total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+                produk_detail: d.produk
+              })),
+            unit: (trx.details || [])
+              .filter(d => d.unit)
+              .map(d => ({
+                unit_id: d.id,
+                token: d.unit_token || d.token || null,
+                name: d.unit?.name || d.name,
+                quantity: d.qty || d.quantity || 1,
+                hours: d.hours || 1,
+                price: d.harga || d.price || 0,
+                total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+                unit_detail: d.unit
+              })),
+            promo: (trx.details || [])
+              .filter(d => d.promo)
+              .map(d => ({
+                promo_id: d.id,
+                token: d.promo_token || d.token || null,
+                name: d.promo?.name || d.name,
+                quantity: d.qty || d.quantity || 1,
+                price: d.harga || d.price || 0,
+                total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+                promo_detail: d.promo
+              }))
+          };
+
+          return res.status(201).json({
+            success: true,
+            message: 'Transaction created successfully and TV turned on',
+            data: mappedData,
+            ws_result: {
+              tv_id: tvInfo.tv_id,
+              command: tvInfo.command,
+              command_status: tvResponse.status,
+              response_time_ms: tvResponse.receivedAt ? 
+                new Date(tvResponse.receivedAt) - new Date(tvResponse.timestamp) : null,
+              timestamp: tvResponse.timestamp
+            }
+          });
+
+        } else if (tvResponse.status === 'failed' || tvResponse.status === 'error') {
+          await dbTransaction.rollback();
+          console.error(`❌ TV ${tvInfo.tv_id} gagal eksekusi: ${tvResponse.error}`);
+          
+          return res.status(503).json({
+            success: false,
+            message: `Transaction cancelled - TV control failed`,
+            error: {
+              tv_id: tvInfo.tv_id,
+              command: tvInfo.command,
+              command_status: tvResponse.status,
+              message: tvResponse.message || 'Command execution failed',
+              error: tvResponse.error,
+              timestamp: tvResponse.timestamp
+            }
+          });
+        }
+      } else {
+        // ✅ PERBAIKAN: Timeout handling
+        await dbTransaction.rollback();
+        console.warn(`⏱️ TV ${tvInfo.tv_id} tidak merespon dalam 10 detik`);
+        
+        return res.status(408).json({
+          success: false,
+          message: 'Transaction cancelled - TV tidak merespon (timeout)',
+          error: {
+            tv_id: tvInfo.tv_id,
+            command: tvInfo.command,
+            timeout: true,
+            waited_ms: 10000
+          }
+        });
+      }
+
+    } catch (wsError) {
+      await dbTransaction.rollback();
+      console.error('WebSocket error during TV control:', wsError);
+      
+      return res.status(503).json({
+        success: false,
+        message: 'Transaction cancelled - Failed to control TV',
+        error: {
+          tv_id: tvInfo.tv_id,
+          message: wsError.message,
+          stack: process.env.NODE_ENV === 'development' ? wsError.stack : undefined
+        }
+      });
+    }
 
   } catch (error) {
-    console.error('Get transactions error:', error);
+    try {
+      await dbTransaction.rollback();
+      console.log('Transaction rolled back due to error:', error.message || error);
+    } catch (rollbackError) {
+      console.error('Rollback error:', rollbackError);
+    }
+
+    console.error('Create transaction error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -987,10 +1287,9 @@ router.post('/addproduk', verifyToken, async (req, res) => {
   }
 });
 
-// Create new transaction with details (admin only)
+// Create new transaction with WebSocket control
 router.post('/', verifyToken, async (req, res) => {
   const dbTransaction = await sequelize.transaction();
-  let transactionFinished = false;
 
   try {
     if (!Transaksi || !TransaksiDetail) {
@@ -1014,27 +1313,33 @@ router.post('/', verifyToken, async (req, res) => {
       duration
     } = req.body;
 
+    // ✅ Get WebSocket connections
+    const tvConnections = req.app.locals.tvConnections;
+    const tvResponses = req.app.locals.tvResponses;
+
+    if (!tvConnections || !tvResponses) {
+      await dbTransaction.rollback();
+      return res.status(500).json({
+        success: false,
+        message: 'WebSocket services not available'
+      });
+    }
+
     // Validation
-    // console.log(req.body);
-    // res.json({
-    //   success: true,
-    //   message: 'Transaction created successfully',
-    //   data: req.body
-    // });
-    // return;
     if (!customer_name) {
       await dbTransaction.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Either customer name is required'
+        message: 'Customer name is required'
       });
     }
 
+    // Cek unit sedang digunakan
     const _unit = await sequelize.query(`
-      select * from transaksi_detail td
-      join transaksi t on t.code = td.code
-      where td.unit_token = :unit_token
-      and t.status = 1
+      SELECT * FROM transaksi_detail td
+      JOIN transaksi t ON t.code = td.code
+      WHERE td.unit_token = :unit_token
+      AND t.status = 1
     `, {
       replacements: { unit_token },
       type: sequelize.QueryTypes.SELECT,
@@ -1048,17 +1353,9 @@ router.post('/', verifyToken, async (req, res) => {
       });
     }
 
-    const _promo = await Promo.findOne({
+    const _promo = promo_token ? await Promo.findOne({
       where: { token: promo_token, status: 1 }
-    });
-
-    // if (!details || !Array.isArray(details) || details.length === 0) {
-    //   await dbTransaction.rollback();
-    //   return res.status(400).json({
-    //     success: false,
-    //     message: 'Transaction details are required'
-    //   });
-    // }
+    }) : null;
 
     // Validate member if provided
     if (memberid && Member) {
@@ -1075,7 +1372,7 @@ router.post('/', verifyToken, async (req, res) => {
       }
     }
 
-    // Generate transaction code with sequential number
+    // Generate transaction code
     let transactionCode;
     let codeExists = true;
     let attempts = 0;
@@ -1088,18 +1385,11 @@ router.post('/', verifyToken, async (req, res) => {
       codeExists = !!existing;
       attempts++;
 
-      // If code exists, wait a moment before trying again
       if (codeExists) {
         await new Promise(resolve => setTimeout(resolve, 10));
       }
     }
 
-    // res.json({
-    //   success: true,
-    //   message: 'Transaction created successfully',
-    //   data: transactionCode
-    // });
-    // return;
     if (codeExists) {
       await dbTransaction.rollback();
       return res.status(500).json({
@@ -1122,14 +1412,10 @@ router.post('/', verifyToken, async (req, res) => {
       updated_by: req.user?.userId || null
     }, { transaction: dbTransaction });
 
-    // Validate and create transaction details
-    const createdDetails = [];
-    let calculatedTotal = 0;
-
+    // Create product details
     for (let i = 0; i < products.length; i++) {
       const product = products[i];
 
-      // Validate required fields
       const check = await Produk.findOne({
         where: { token: product.product_token }
       });
@@ -1142,52 +1428,9 @@ router.post('/', verifyToken, async (req, res) => {
         });
       }
 
-      await check.update({ stok: check.stok - product.quantity }, { transaction: dbTransaction });
-
-      // Validate unit if provided
-      if (product.unitid && Unit) {
-        const unit = await Unit.findOne({
-          where: { id: parseInt(product.unitid), status: { [Op.ne]: 0 } }
-        });
-
-        if (!unit) {
-          await dbTransaction.rollback();
-          return res.status(400).json({
-            success: false,
-            message: `Invalid unit ID ${product.unitid} at product index ${i}`
-          });
-        }
-      }
-
-      // Validate promo if provided
-      if (product.promoid && Promo) {
-        const promo = await Promo.findOne({
-          where: { id: parseInt(product.promoid), status: 1 }
-        });
-
-        if (!promo) {
-          await dbTransaction.rollback();
-          return res.status(400).json({
-            success: false,
-            message: `Invalid promo ID ${product.promoid} at product index ${i}`
-          });
-        }
-      }
-
-      // Validate produk if provided
-      if (product.produk && Produk) {
-        const produk = await Produk.findOne({
-          where: { id: parseInt(product.produk), status: 1 }
-        });
-
-        if (!produk) {
-          await dbTransaction.rollback();
-          return res.status(400).json({
-            success: false,
-            message: `Invalid produk ID ${product.produk} at product index ${i}`
-          });
-        }
-      }
+      await check.update({ 
+        stok: check.stok - product.quantity 
+      }, { transaction: dbTransaction });
 
       const productData = {
         code: transactionCode,
@@ -1201,13 +1444,11 @@ router.post('/', verifyToken, async (req, res) => {
         updated_by: req.user?.userId || null
       };
 
-      const createdDetail = await TransaksiDetail.create(productData, { transaction: dbTransaction });
-      // createdDetails.push(createdDetail);
-
-      // calculatedTotal += productData.harga;
+      await TransaksiDetail.create(productData, { transaction: dbTransaction });
     }
 
-    const productData = {
+    // Create rental detail
+    const rentalData = {
       code: transactionCode,
       name: promo_token ? _promo.name : null,
       promo_token: promo_token ?? null,
@@ -1220,18 +1461,12 @@ router.post('/', verifyToken, async (req, res) => {
       updated_by: req.user?.userId || null
     };
 
-    const createdDetail = await TransaksiDetail.create(productData, { transaction: dbTransaction });
-    // Update total_price if not provided
-    // if (!total_price) {
-    //   await newTransaction.update({
-    //     grandtotal: calculatedTotal.toString()
-    //   }, { transaction: dbTransaction });
-    // }
+    await TransaksiDetail.create(rentalData, { transaction: dbTransaction });
 
-    // === COBA ADB CONTROL SEBELUM COMMIT ===
-    console.log('Unit token for ADB control:', unit_token);
-    const getIP = await sequelize.query(`
-      SELECT b.*, c.* FROM units u 
+    // ✅ WEBSOCKET CONTROL - POWER ON TV
+    console.log('Getting TV info for unit token:', unit_token);
+    const getTV = await sequelize.query(`
+      SELECT b.tv_id, c.command FROM units u 
       JOIN brandtv b ON b.id = u.brandtvid
       JOIN codetv c ON c.id = b.codetvid
       WHERE u.status = 1 AND c.desc = 'on' AND u.token = ?
@@ -1240,118 +1475,198 @@ router.post('/', verifyToken, async (req, res) => {
       type: sequelize.QueryTypes.SELECT,
     });
 
-    console.log('Testing ADB control before commit...', getIP[0].ip_address, getIP[0].command);
-    const adbResult = await executeAdbControl(getIP[0].ip_address, getIP[0].command);
-    console.log('ADB Control Success:', adbResult);
+    if (!getTV || getTV.length === 0) {
+      await dbTransaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'TV configuration not found for this unit'
+      });
+    }
 
-    // ADB berhasil, commit transaksi
-    await dbTransaction.commit();
-    transactionFinished = true;
+    const tvInfo = getTV[0];
+    const ws = tvConnections.get(tvInfo.tv_id);
 
-    // Fetch complete transaction with details
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      await dbTransaction.rollback();
+      return res.status(503).json({
+        success: false,
+        message: `TV ${tvInfo.tv_id} tidak terhubung`,
+        debug: {
+          tv_id: tvInfo.tv_id,
+          wsExists: !!ws,
+          wsReadyState: ws?.readyState
+        }
+      });
+    }
 
-    const includeOptions = [
-      {
-        model: TransaksiDetail,
-        as: 'details',
-        required: false,
-        // where: { produk_token: { [Op.ne]: null } },
-        include: [
-          {
-            model: Unit,
-            as: 'unit', // pastikan alias sesuai relasi di init-models.js
-            required: false
-          },
-          {
-            model: Promo,
-            as: 'promo', // pastikan alias sesuai relasi di init-models.js
-            required: false
-          },
-          {
-            model: Produk,
-            as: 'produk', // pastikan alias sesuai relasi di init-models.js
-            required: false
-          }
-        ]
+    console.log(`Sending POWER ON command to TV: ${tvInfo.tv_id}, command: ${tvInfo.command}`);
+
+    try {
+      // ✅ PERBAIKAN: Clear old response sebelum kirim command baru
+      if (tvResponses.has(tvInfo.tv_id)) {
+        console.log(`🧹 Clearing old response for TV ${tvInfo.tv_id}`);
+        tvResponses.delete(tvInfo.tv_id);
       }
-    ];
 
-    const trx = await Transaksi.findOne({
-      where: { code: transactionCode },
-      include: includeOptions
-    });
+      // ✅ Kirim command
+      await sendTVCommand(ws, tvInfo.tv_id, tvInfo.command, 'power_on');
 
-    const mappedData = {
-      code: trx.code,
-      memberid: trx.memberid,
-      customer: trx.customer,
-      telepon: trx.telepon,
-      grandtotal: trx.grandtotal,
-      cabangid: trx.cabangid,
-      status: trx.status,
-      created_by: trx.created_by,
-      updated_by: trx.updated_by,
-      createdAt: trx.createdAt,
-      updatedAt: trx.updatedAt,
-      produk: (trx.details || [])
-        .filter(d => d.produk)
-        .map(d => ({
-          product_id: d.id,
-          token: d.produk_token || d.token || null,
-          name: d.produk?.name || d.name,
-          quantity: d.qty || d.quantity || 1,
-          price: d.harga || d.price || 0,
-          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
-          produk_detail: d.produk
-        })),
-      unit: (trx.details || [])
-        .filter(d => d.unit)
-        .map(d => ({
-          unit_id: d.id,
-          token: d.unit_token || d.token || null,
-          name: d.unit?.name || d.name,
-          quantity: d.qty || d.quantity || 1,
-          hours: d.hours || 1,
-          price: d.harga || d.price || 0,
-          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
-          unit_detail: d.unit
-        })),
-      promo: (trx.details || [])
-        .filter(d => d.promo)
-        .map(d => ({
-          promo_id: d.id,
-          token: d.promo_token || d.token || null,
-          name: d.promo?.name || d.name,
-          quantity: d.qty || d.quantity || 1,
-          price: d.harga || d.price || 0,
-          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
-          promo_detail: d.promo
-        }))
-    };
+      // ✅ Tunggu response (Promise-based, non-blocking)
+      console.log(`⏳ Menunggu response dari TV ${tvInfo.tv_id}...`);
+      const tvResponse = await waitForTVResponse(
+        tvResponses, 
+        tvInfo.tv_id, 
+        tvInfo.command, 
+        10000 // 10 detik timeout
+      );
 
-    res.status(201).json({
-      success: true,
-      message: 'Transaction created successfully and TV turned on',
-      data: mappedData,
-      adb_result: adbResult
-    });
+      // ✅ PERBAIKAN: Evaluasi response dengan handling lengkap
+      if (tvResponse) {
+        // Clear response setelah digunakan
+        tvResponses.delete(tvInfo.tv_id);
+
+        if (tvResponse.status === 'success') {
+          console.log(`✅ TV ${tvInfo.tv_id} berhasil dinyalakan`);
+
+          // WebSocket berhasil, commit transaksi
+          await dbTransaction.commit();
+
+          // Fetch complete transaction
+          const includeOptions = [
+            {
+              model: TransaksiDetail,
+              as: 'details',
+              required: false,
+              include: [
+                { model: Unit, as: 'unit', required: false },
+                { model: Promo, as: 'promo', required: false },
+                { model: Produk, as: 'produk', required: false }
+              ]
+            }
+          ];
+
+          const trx = await Transaksi.findOne({
+            where: { code: transactionCode },
+            include: includeOptions
+          });
+
+          const mappedData = {
+            code: trx.code,
+            memberid: trx.memberid,
+            customer: trx.customer,
+            telepon: trx.telepon,
+            grandtotal: trx.grandtotal,
+            cabangid: trx.cabangid,
+            status: trx.status,
+            created_by: trx.created_by,
+            updated_by: trx.updated_by,
+            createdAt: trx.createdAt,
+            updatedAt: trx.updatedAt,
+            produk: (trx.details || [])
+              .filter(d => d.produk)
+              .map(d => ({
+                product_id: d.id,
+                token: d.produk_token || d.token || null,
+                name: d.produk?.name || d.name,
+                quantity: d.qty || d.quantity || 1,
+                price: d.harga || d.price || 0,
+                total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+                produk_detail: d.produk
+              })),
+            unit: (trx.details || [])
+              .filter(d => d.unit)
+              .map(d => ({
+                unit_id: d.id,
+                token: d.unit_token || d.token || null,
+                name: d.unit?.name || d.name,
+                quantity: d.qty || d.quantity || 1,
+                hours: d.hours || 1,
+                price: d.harga || d.price || 0,
+                total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+                unit_detail: d.unit
+              })),
+            promo: (trx.details || [])
+              .filter(d => d.promo)
+              .map(d => ({
+                promo_id: d.id,
+                token: d.promo_token || d.token || null,
+                name: d.promo?.name || d.name,
+                quantity: d.qty || d.quantity || 1,
+                price: d.harga || d.price || 0,
+                total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+                promo_detail: d.promo
+              }))
+          };
+
+          return res.status(201).json({
+            success: true,
+            message: 'Transaction created successfully and TV turned on',
+            data: mappedData,
+            ws_result: {
+              tv_id: tvInfo.tv_id,
+              command: tvInfo.command,
+              command_status: tvResponse.status,
+              response_time_ms: tvResponse.receivedAt ? 
+                new Date(tvResponse.receivedAt) - new Date(tvResponse.timestamp) : null,
+              timestamp: tvResponse.timestamp
+            }
+          });
+
+        } else if (tvResponse.status === 'failed' || tvResponse.status === 'error') {
+          await dbTransaction.rollback();
+          console.error(`❌ TV ${tvInfo.tv_id} gagal eksekusi: ${tvResponse.error}`);
+          
+          return res.status(503).json({
+            success: false,
+            message: `Transaction cancelled - TV control failed`,
+            error: {
+              tv_id: tvInfo.tv_id,
+              command: tvInfo.command,
+              command_status: tvResponse.status,
+              message: tvResponse.message || 'Command execution failed',
+              error: tvResponse.error,
+              timestamp: tvResponse.timestamp
+            }
+          });
+        }
+      } else {
+        // ✅ PERBAIKAN: Timeout handling
+        await dbTransaction.rollback();
+        console.warn(`⏱️ TV ${tvInfo.tv_id} tidak merespon dalam 10 detik`);
+        
+        return res.status(408).json({
+          success: false,
+          message: 'Transaction cancelled - TV tidak merespon (timeout)',
+          error: {
+            tv_id: tvInfo.tv_id,
+            command: tvInfo.command,
+            timeout: true,
+            waited_ms: 10000
+          }
+        });
+      }
+
+    } catch (wsError) {
+      await dbTransaction.rollback();
+      console.error('WebSocket error during TV control:', wsError);
+      
+      return res.status(503).json({
+        success: false,
+        message: 'Transaction cancelled - Failed to control TV',
+        error: {
+          tv_id: tvInfo.tv_id,
+          message: wsError.message,
+          stack: process.env.NODE_ENV === 'development' ? wsError.stack : undefined
+        }
+      });
+    }
 
   } catch (error) {
-    // Rollback jika ADB gagal atau error lain
     try {
       await dbTransaction.rollback();
       console.log('Transaction rolled back due to error:', error.message || error);
     } catch (rollbackError) {
       console.error('Rollback error:', rollbackError);
-    }
-
-    // Jika error dari ADB control
-    if (error.success === false && error.message) {
-      return res.status(503).json({
-        success: false,
-        message: 'Transaction cancelled - TV control failed',
-        error: error
-      });
     }
 
     console.error('Create transaction error:', error);
@@ -1363,108 +1678,6 @@ router.post('/', verifyToken, async (req, res) => {
   }
 });
 
-// Update transaction (admin only)
-router.put('/offtv/:code', verifyToken, async (req, res) => {
-  try {
-    if (!Transaksi) {
-      return res.status(500).json({
-        success: false,
-        message: 'Transaksi model not available'
-      });
-    }
-
-    const { code } = req.params;
-    const transaction = await Transaksi.findOne({
-      where: { code, status: 1 },
-      include: [{
-        model: TransaksiDetail,
-        as: 'details',
-        required: false,
-        where: { status: 1 }, // hanya detail yang aktif
-        include: [
-          {
-            model: Unit,
-            as: 'unit',
-            required: false
-          },
-        ]
-      }]
-    });
-
-    const unitTokens = transaction.details
-      .filter(detail => detail.unit_token)
-      .map(detail => detail.unit_token);
-
-    if (!transaction) {
-      return res.status(404).json({
-        success: false,
-        message: 'Transaction not found'
-      });
-    }
-
-    const { memberid, customer, telepon, grandtotal, status } = req.body;
-
-    const checkunit = await HistoryUnits.findOne({
-      where: { token: unitTokens[0] }
-    });
-
-    let getIP = [];
-    if (!checkunit) {
-      getIP = await sequelize.query(`
-        SELECT b.*, c.* FROM units u 
-        JOIN brandtv b ON b.id = u.brandtvid
-        JOIN codetv c ON c.id = b.codetvid
-        WHERE u.status = 1 AND c.desc = 'off' AND u.token = ?
-      `, {
-        replacements: [unitTokens[0]],
-        type: sequelize.QueryTypes.SELECT
-      });
-    }else{
-      getIP = await sequelize.query(`
-        SELECT b.*, c.* FROM units u 
-        JOIN brandtv b ON b.id = u.brandtvid
-        JOIN codetv c ON c.id = b.codetvid
-        WHERE u.status = 1 AND c.desc = 'off' AND u.id = ?
-      `, {
-        replacements: [checkunit.unitid],
-        type: sequelize.QueryTypes.SELECT
-      });
-    }
-
-
-    try {
-      const adbResult = await executeAdbControl(getIP[0].ip_address, getIP[0].command);
-      
-      await transaction.update({
-        status: 0,
-        updated_by: req.user?.userId || transaction.updated_by
-      });
-      
-      res.json({
-        success: true,
-        message: 'Transaction updated successfully',
-        data: transaction,
-        adb_result: adbResult
-      });
-    } catch (adbError) {
-      console.error('ADB Control Failed:', adbError);
-      
-      res.status(503).json({
-        success: false,
-        message: 'Failed to turn off TV',
-        error: adbError
-      });
-    }
-
-  } catch (error) {
-    console.error('Update transaction error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
 
 router.post('/extendtime/:code', verifyToken, async (req, res) => {
   const dbTransaction = await sequelize.transaction();
