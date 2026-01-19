@@ -142,12 +142,11 @@ router.get('/', (req, res) => {
   });
 });
 
-// ✅ IMPROVED: Time Out Endpoint
+// ✅ IMPROVED: Time Out Endpoint (Parallel Processing)
 router.get("/time_out", async (req, res) => {
   console.log('🔔 Time out endpoint called');
   
   try {
-    // ✅ Validate WebSocket services
     const tvConnections = req.app.locals.tvConnections;
     const tvResponses = req.app.locals.tvResponses;
     
@@ -179,13 +178,11 @@ router.get("/time_out", async (req, res) => {
       include: includeOptions
     });
 
-    const results = [];
-    let totalProcessed = 0;
-    let totalSuccess = 0;
-    let totalFailed = 0;
+    // ✅ Collect all tasks untuk parallel processing
+    const tasks = [];
+    const taskMetadata = []; // Track metadata untuk setiap task
 
     for (const transaksi of getAll) {
-      // Group details by unit_token
       const unitGroups = {};
       
       transaksi.details
@@ -233,177 +230,213 @@ router.get("/time_out", async (req, res) => {
         }
 
         console.log(`⏰ Unit ${unitToken} sudah timeout, akan dimatikan...`);
-        totalProcessed++;
 
-        try {
-          // Get unit history
-          const checkunit = await history_units.findOne({
-            where: { token: unitToken }
-          });
-
-          // Get TV info
-          let getTV;
-          if (!checkunit) {
-            getTV = await sequelize.query(`
-              SELECT b.tv_id, c.command FROM units u 
-              JOIN brandtv b ON b.id = u.brandtvid
-              JOIN codetv c ON c.id = b.codetvid
-              WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
-            `, {
-              replacements: [unitToken],
-              type: sequelize.QueryTypes.SELECT,
-            });
-          } else {
-            getTV = await sequelize.query(`
-              SELECT b.tv_id, c.command FROM units u 
-              JOIN brandtv b ON b.id = u.brandtvid
-              JOIN codetv c ON c.id = b.codetvid
-              WHERE u.status = 1 AND c.desc = 'on/off' AND u.id = ?
-            `, {
-              replacements: [checkunit.unitid],
-              type: sequelize.QueryTypes.SELECT
-            });
-          }
-
-          if (!getTV || getTV.length === 0) {
-            totalFailed++;
-            results.push({
-              token: unitToken,
-              transaction_code: transaksi.code,
-              success: false,
-              message: "TV configuration not found"
-            });
-            continue;
-          }
-
-          const tvInfo = getTV[0];
-          const ws = tvConnections.get(tvInfo.tv_id);
-
-          if (!ws || ws.readyState !== WebSocket.OPEN) {
-            totalFailed++;
-            results.push({
-              token: unitToken,
-              transaction_code: transaksi.code,
-              success: false,
-              message: `TV ${tvInfo.tv_id} tidak terhubung`,
-              tv_id: tvInfo.tv_id
-            });
-            continue;
-          }
-
-          // ✅ Kirim command (gunakan command dari database, bukan hardcode)
+        // ✅ Create task untuk setiap TV (non-blocking)
+        const task = (async () => {
           try {
-            await sendTVCommand(ws, tvInfo.tv_id, tvInfo.command, 'power_off');
-          } catch (sendError) {
-            totalFailed++;
-            results.push({
-              token: unitToken,
-              transaction_code: transaksi.code,
-              success: false,
-              message: `Failed to send command: ${sendError.message}`,
-              tv_id: tvInfo.tv_id
+            // Get unit history
+            const checkunit = await history_units.findOne({
+              where: { token: unitToken }
             });
-            continue;
-          }
 
-          // ✅ Tunggu response (Promise-based, non-blocking)
-          console.log(`⏳ Menunggu response dari TV ${tvInfo.tv_id}...`);
-          const tvResponse = await waitForTVResponse(
-            tvResponses, 
-            tvInfo.tv_id, 
-            tvInfo.command, 
-            10000 // 10 detik timeout
-          );
+            // Get TV info
+            let getTV;
+            if (!checkunit) {
+              getTV = await sequelize.query(`
+                SELECT b.tv_id, c.command FROM units u 
+                JOIN brandtv b ON b.id = u.brandtvid
+                JOIN codetv c ON c.id = b.codetvid
+                WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
+              `, {
+                replacements: [unitToken],
+                type: sequelize.QueryTypes.SELECT,
+              });
+            } else {
+              getTV = await sequelize.query(`
+                SELECT b.tv_id, c.command FROM units u 
+                JOIN brandtv b ON b.id = u.brandtvid
+                JOIN codetv c ON c.id = b.codetvid
+                WHERE u.status = 1 AND c.desc = 'on/off' AND u.id = ?
+              `, {
+                replacements: [checkunit.unitid],
+                type: sequelize.QueryTypes.SELECT
+              });
+            }
 
-          // Evaluasi response
-          if (tvResponse && tvResponse.status === 'success') {
-            console.log(`✅ TV ${tvInfo.tv_id} berhasil dimatikan`);
+            if (!getTV || getTV.length === 0) {
+              return {
+                token: unitToken,
+                transaction_code: transaksi.code,
+                success: false,
+                message: "TV configuration not found"
+              };
+            }
+
+            const tvInfo = getTV[0];
+            const ws = tvConnections.get(tvInfo.tv_id);
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+              return {
+                token: unitToken,
+                transaction_code: transaksi.code,
+                success: false,
+                message: `TV ${tvInfo.tv_id} tidak terhubung`,
+                tv_id: tvInfo.tv_id
+              };
+            }
+
+            // ✅ Clear old response
+            if (tvResponses.has(tvInfo.tv_id)) {
+              console.log(`🧹 Clearing old response for TV ${tvInfo.tv_id}`);
+              tvResponses.delete(tvInfo.tv_id);
+            }
+
+            // ✅ Send command
+            await sendTVCommand(ws, tvInfo.tv_id, tvInfo.command, 'power_off_timeout');
+            console.log(`✅ Power off command sent to TV ${tvInfo.tv_id}`);
+
+            // ✅ Wait for response (non-blocking per TV)
+            console.log(`⏳ Menunggu response dari TV ${tvInfo.tv_id}...`);
+            const tvResponse = await waitForTVResponse(
+              tvResponses, 
+              tvInfo.tv_id, 
+              tvInfo.command, 
+              10000
+            );
+
+            // ✅ Process response
+            if (tvResponse) {
+              tvResponses.delete(tvInfo.tv_id);
+
+              if (tvResponse.status === 'success') {
+                console.log(`✅ TV ${tvInfo.tv_id} berhasil dimatikan`);
+                
+                // Update transaksi
+                await transaksi.update({ status: 0 });
+                console.log(`✅ Transaksi ${transaksi.code} updated to status 0`);
+                
+                return {
+                  token: unitToken,
+                  transaction_code: transaksi.code,
+                  tv_id: tvInfo.tv_id,
+                  start_time: createdAt,
+                  total_hours: totalHours,
+                  end_time: endTime,
+                  transaction_updated: true,
+                  command_sent: tvInfo.command,
+                  command_status: tvResponse.status,
+                  response_time_ms: tvResponse.receivedAt ? 
+                    new Date(tvResponse.receivedAt) - new Date(tvResponse.timestamp) : null,
+                  success: true,
+                  details_processed: group.allDetails.map(d => ({
+                    id: d.id,
+                    type: d.type,
+                    hours: d.hours,
+                    created_at: d.createdAt
+                  }))
+                };
+
+              } else {
+                console.error(`❌ TV ${tvInfo.tv_id} gagal eksekusi: ${tvResponse.error}`);
+
+                return {
+                  token: unitToken,
+                  transaction_code: transaksi.code,
+                  tv_id: tvInfo.tv_id,
+                  success: false,
+                  command_sent: tvInfo.command,
+                  command_status: tvResponse.status,
+                  message: tvResponse.message || 'Command execution failed',
+                  error: tvResponse.error,
+                  timestamp: tvResponse.timestamp
+                };
+              }
+            } else {
+              console.warn(`⏱️ TV ${tvInfo.tv_id} tidak merespon dalam 10 detik`);
+
+              return {
+                token: unitToken,
+                transaction_code: transaksi.code,
+                tv_id: tvInfo.tv_id,
+                success: false,
+                command_sent: tvInfo.command,
+                message: 'TV tidak merespon dalam 10 detik',
+                timeout: true,
+                waited_ms: 10000
+              };
+            }
+
+          } catch (error) {
+            console.error(`❌ Error processing unit ${unitToken}:`, error.message);
+            logError(error, null, { unitToken, transactionCode: transaksi.code });
             
-            // Update transaksi
-            await transaksi.update({ status: 0 });
-            console.log(`✅ Transaksi ${transaksi.code} updated to status 0`);
-            
-            totalSuccess++;
-            results.push({
+            return {
               token: unitToken,
               transaction_code: transaksi.code,
-              tv_id: tvInfo.tv_id,
-              start_time: createdAt,
-              total_hours: totalHours,
-              end_time: endTime,
-              transaction_updated: true,
-              command_sent: tvInfo.command,
-              command_status: tvResponse.status,
-              success: true,
-              details_processed: group.allDetails.map(d => ({
-                id: d.id,
-                type: d.type,
-                hours: d.hours,
-                created_at: d.createdAt
-              }))
-            });
-
-            // Clear response
-            tvResponses.delete(tvInfo.tv_id);
-
-          } else if (tvResponse && (tvResponse.status === 'failed' || tvResponse.status === 'error')) {
-            console.error(`❌ TV ${tvInfo.tv_id} gagal eksekusi: ${tvResponse.error}`);
-            totalFailed++;
-
-            results.push({
-              token: unitToken,
-              transaction_code: transaksi.code,
-              tv_id: tvInfo.tv_id,
               success: false,
-              command_sent: tvInfo.command,
-              command_status: tvResponse.status,
-              message: tvResponse.message || 'Command execution failed',
-              error: tvResponse.error
-            });
-
-          } else {
-            // Timeout
-            console.warn(`⏱️ TV ${tvInfo.tv_id} tidak merespon (timeout)`);
-            totalFailed++;
-
-            results.push({
-              token: unitToken,
-              transaction_code: transaksi.code,
-              tv_id: tvInfo.tv_id,
-              success: false,
-              command_sent: tvInfo.command,
-              message: 'TV tidak merespon (timeout)',
-              timeout: true
-            });
+              message: error.message || "Command failed",
+              error: error.stack
+            };
           }
+        })();
 
-        } catch (error) {
-          totalFailed++;
-          console.error(`❌ Error processing unit ${unitToken}:`, error.message);
-          logError(error, null, { unitToken, transactionCode: transaksi.code });
-          
-          results.push({
-            token: unitToken,
-            transaction_code: transaksi.code,
-            success: false,
-            message: error.message || "Command failed",
-            error: error.stack
-          });
-        }
+        tasks.push(task);
+        taskMetadata.push({ unitToken, transactionCode: transaksi.code });
       }
     }
+
+    console.log(`\n🚀 Processing ${tasks.length} TVs in parallel...`);
+
+    // ✅ Execute all tasks in parallel (Promise.allSettled untuk handle semua hasil)
+    const startTime = Date.now();
+    const results = await Promise.allSettled(tasks);
+    const elapsed = Date.now() - startTime;
+
+    console.log(`✅ All tasks completed in ${elapsed}ms`);
+
+    // ✅ Process results
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    const finalResults = [];
+
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        const data = result.value;
+        if (data.success) {
+          totalSuccess++;
+        } else {
+          totalFailed++;
+        }
+        finalResults.push(data);
+      } else {
+        // Promise rejected
+        totalFailed++;
+        const metadata = taskMetadata[index];
+        console.error(`❌ Task failed for ${metadata.unitToken}:`, result.reason);
+        
+        finalResults.push({
+          token: metadata.unitToken,
+          transaction_code: metadata.transactionCode,
+          success: false,
+          message: result.reason?.message || 'Task execution failed',
+          error: result.reason?.stack
+        });
+      }
+    });
 
     return res.json({
       success: true,
       message: `Perintah Power Off TV selesai diproses.`,
       summary: {
-        total_units: totalProcessed,
+        total_units: tasks.length,
         success: totalSuccess,
         failed: totalFailed,
-        success_rate: totalProcessed > 0 ? 
-          `${((totalSuccess / totalProcessed) * 100).toFixed(1)}%` : '0%'
+        success_rate: tasks.length > 0 ? 
+          `${((totalSuccess / tasks.length) * 100).toFixed(1)}%` : '0%',
+        execution_time_ms: elapsed
       },
-      results: results
+      results: finalResults,
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
@@ -418,12 +451,11 @@ router.get("/time_out", async (req, res) => {
   }
 });
 
-// ✅ IMPROVED: Sleep Endpoint
+// ✅ IMPROVED: Sleep Endpoint (Parallel Processing)
 router.get("/sleep", async (req, res) => {
   console.log('😴 Sleep mode endpoint called');
   
   try {
-    // ✅ Validate WebSocket services
     const tvConnections = req.app.locals.tvConnections;
     const tvResponses = req.app.locals.tvResponses;
 
@@ -433,11 +465,6 @@ router.get("/sleep", async (req, res) => {
         message: 'WebSocket services not available'
       });
     }
-
-    const results = [];
-    let totalProcessed = 0;
-    let totalSuccess = 0;
-    let totalFailed = 0;
 
     const getAll = await sequelize.query(`
       SELECT b.tv_id, c.command FROM units u 
@@ -454,110 +481,150 @@ router.get("/sleep", async (req, res) => {
       type: sequelize.QueryTypes.SELECT
     });
 
-    for (const unit of getAll) {
-      totalProcessed++;
-      
-      try {
-        const ws = tvConnections.get(unit.tv_id);
-        
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          console.log(`⚠️ TV ${unit.tv_id} tidak terhubung, skip...`);
-          totalFailed++;
-          results.push({
-            tv_id: unit.tv_id,
-            success: false,
-            message: 'TV not connected'
-          });
-          continue;
-        }
+    console.log(`📊 Found ${getAll.length} TVs to sleep`);
 
-        // ✅ Kirim sleep command
+    // ✅ Create parallel tasks
+    const tasks = getAll.map(unit => {
+      return (async () => {
         try {
-          await sendTVCommand(ws, unit.tv_id, unit.command, 'sleep');
-        } catch (sendError) {
-          totalFailed++;
-          results.push({
+          const ws = tvConnections.get(unit.tv_id);
+          
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            console.log(`⚠️ TV ${unit.tv_id} tidak terhubung, skip...`);
+            return {
+              tv_id: unit.tv_id,
+              success: false,
+              message: 'TV not connected'
+            };
+          }
+
+          // Clear old response
+          if (tvResponses.has(unit.tv_id)) {
+            console.log(`🧹 Clearing old response for TV ${unit.tv_id}`);
+            tvResponses.delete(unit.tv_id);
+          }
+
+          // Send sleep command
+          await sendTVCommand(ws, unit.tv_id, unit.command, 'sleep_mode');
+          console.log(`✅ Sleep command sent to TV ${unit.tv_id}`);
+
+          // Wait for response
+          console.log(`⏳ Menunggu response dari TV ${unit.tv_id}...`);
+          const tvResponse = await waitForTVResponse(
+            tvResponses, 
+            unit.tv_id, 
+            unit.command, 
+            8000
+          );
+
+          if (tvResponse) {
+            tvResponses.delete(unit.tv_id);
+
+            if (tvResponse.status === 'success') {
+              console.log(`✅ Sleep command berhasil untuk TV ${unit.tv_id}`);
+
+              return {
+                tv_id: unit.tv_id,
+                success: true,
+                message: 'Sleep command executed successfully',
+                command: unit.command,
+                command_status: tvResponse.status,
+                response_message: tvResponse.message,
+                response_time_ms: tvResponse.receivedAt ? 
+                  new Date(tvResponse.receivedAt) - new Date(tvResponse.timestamp) : null,
+                timestamp: tvResponse.timestamp
+              };
+
+            } else {
+              console.error(`❌ Sleep command gagal untuk TV ${unit.tv_id}: ${tvResponse.error}`);
+
+              return {
+                tv_id: unit.tv_id,
+                success: false,
+                command: unit.command,
+                command_status: tvResponse.status,
+                message: tvResponse.message || 'Command failed',
+                error: tvResponse.error,
+                timestamp: tvResponse.timestamp
+              };
+            }
+          } else {
+            console.warn(`⏱️ TV ${unit.tv_id} tidak merespon dalam 8 detik`);
+
+            return {
+              tv_id: unit.tv_id,
+              success: false,
+              command: unit.command,
+              message: 'TV tidak merespon dalam 8 detik',
+              timeout: true,
+              waited_ms: 8000
+            };
+          }
+
+        } catch (error) {
+          console.error(`❌ Error processing TV ${unit.tv_id}:`, error.message);
+          logError(error, null, { tv_id: unit.tv_id });
+          
+          return {
             tv_id: unit.tv_id,
             success: false,
-            message: `Failed to send command: ${sendError.message}`
-          });
-          continue;
+            message: error.message || "Command failed",
+            error: error.stack
+          };
         }
+      })();
+    });
 
-        // ✅ Tunggu response
-        console.log(`⏳ Menunggu response dari TV ${unit.tv_id}...`);
-        const tvResponse = await waitForTVResponse(
-          tvResponses, 
-          unit.tv_id, 
-          unit.command, 
-          5000
-        );
+    console.log(`\n🚀 Processing ${tasks.length} TVs in parallel...`);
 
-        // Evaluasi response
-        if (tvResponse && tvResponse.status === 'success') {
-          console.log(`✅ Sleep command berhasil untuk TV ${unit.tv_id}`);
+    // Execute all in parallel
+    const startTime = Date.now();
+    const results = await Promise.allSettled(tasks);
+    const elapsed = Date.now() - startTime;
+
+    console.log(`✅ All tasks completed in ${elapsed}ms`);
+
+    // Process results
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    const finalResults = [];
+
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        const data = result.value;
+        if (data.success) {
           totalSuccess++;
-
-          results.push({
-            tv_id: unit.tv_id,
-            success: true,
-            message: 'Sleep command executed successfully',
-            command: unit.command,
-            command_status: tvResponse.status
-          });
-
-          // Clear response
-          tvResponses.delete(unit.tv_id);
-
-        } else if (tvResponse && (tvResponse.status === 'failed' || tvResponse.status === 'error')) {
-          console.error(`❌ Sleep command gagal untuk TV ${unit.tv_id}`);
-          totalFailed++;
-
-          results.push({
-            tv_id: unit.tv_id,
-            success: false,
-            message: tvResponse.message || 'Command failed',
-            error: tvResponse.error
-          });
-
         } else {
-          // Timeout
-          console.warn(`⏱️ TV ${unit.tv_id} tidak merespon (timeout)`);
           totalFailed++;
-
-          results.push({
-            tv_id: unit.tv_id,
-            success: false,
-            message: 'TV tidak merespon (timeout)',
-            timeout: true
-          });
         }
-
-      } catch (error) {
+        finalResults.push(data);
+      } else {
         totalFailed++;
-        console.error(`❌ Error processing TV ${unit.tv_id}:`, error);
-        logError(error, null, { tv_id: unit.tv_id });
+        const unit = getAll[index];
+        console.error(`❌ Task failed for TV ${unit.tv_id}:`, result.reason);
         
-        results.push({
+        finalResults.push({
           tv_id: unit.tv_id,
           success: false,
-          message: error.message || "Command failed",
-          error: error.stack
+          message: result.reason?.message || 'Task execution failed',
+          error: result.reason?.stack
         });
       }
-    }
+    });
 
     return res.json({
       success: true,
       message: `Perintah Sleep TV selesai diproses.`,
       summary: {
-        total_units: totalProcessed,
+        total_units: tasks.length,
         success: totalSuccess,
         failed: totalFailed,
-        success_rate: totalProcessed > 0 ? 
-          `${((totalSuccess / totalProcessed) * 100).toFixed(1)}%` : '0%'
+        success_rate: tasks.length > 0 ? 
+          `${((totalSuccess / tasks.length) * 100).toFixed(1)}%` : '0%',
+        execution_time_ms: elapsed
       },
-      results: results
+      results: finalResults,
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
