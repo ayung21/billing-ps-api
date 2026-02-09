@@ -77,7 +77,7 @@ router.get('/', verifyToken, verifyRole([PERMISSIONS.VIEW_REPORT_PRODUCT,PERMISS
                 {
                     model: Cabang,
                     as: 'cabang_detail', // pastikan alias sesuai relasi di model
-                    attributes: ['id', 'name', 'alamat', 'status']
+                    attributes: ['name']
                 }
             ]
         });
@@ -371,7 +371,7 @@ router.post('/', verifyToken, async (req, res) => {
             });
         }
 
-        const { type, name, stok, harga_jual, harga_beli, cabang, status } = req.body;
+        const { type, name, stok, warning_level, harga_jual, harga_beli, cabang, status } = req.body;
 
         if (!type || !name || stok === undefined || harga_beli === undefined || harga_jual === undefined) {
             return res.status(400).json({
@@ -435,6 +435,7 @@ router.post('/', verifyToken, async (req, res) => {
             type: parseInt(type),
             name,
             stok: parseInt(stok),
+            warning_level: warning_level !== undefined ? parseInt(warning_level) : 5,
             cabang: cabang ? parseInt(cabang) : null,
             status: status !== undefined ? parseInt(status) : 1,
             harga_beli: parseInt(harga_beli),
@@ -449,7 +450,7 @@ router.post('/', verifyToken, async (req, res) => {
             type: parseInt(type),
             name,
             stok: parseInt(stok),
-            cabangid: cabang ? parseInt(cabang) : null,
+            warning_level: warning_level !== undefined ? parseInt(warning_level) : 5,
             status: status !== undefined ? parseInt(status) : 1,
             desc: 'Created',
             harga_beli: parseInt(harga_beli),
@@ -492,7 +493,7 @@ router.put('/:id', verifyToken, async (req, res) => {
             });
         }
 
-        const { type, name, stok, harga_beli, harga_jual, cabang, status } = req.body;
+        const { type, name, stok, warning_level, harga_beli, harga_jual, cabang, status } = req.body;
 
         // Validate type if provided
         if (type !== undefined && ![1, 2].includes(parseInt(type))) {
@@ -573,6 +574,7 @@ router.put('/:id', verifyToken, async (req, res) => {
             type: type !== undefined ? parseInt(type) : produk.type,
             name: name || produk.name,
             stok: stok !== undefined ? parseInt(stok) : produk.stok,
+            warning_level: warning_level !== undefined ? parseInt(warning_level) : produk.warning_level,
             cabang: cabang !== undefined ? (cabang ? parseInt(cabang) : null) : produk.cabang,
             harga_beli: harga_beli !== undefined ? parseInt(harga_beli) : produk.harga_beli,
             harga_jual: harga_jual !== undefined ? parseInt(harga_jual) : produk.harga_jual,
@@ -623,7 +625,10 @@ router.delete('/:id', verifyToken, async (req, res) => {
         }
 
         // Set status to non-active (2)
+        const _token ='PRD-' + Math.random().toString(36).substring(2, 15); // Generate random token
+        
         await produk.update({
+            token: _token,
             status: 0,
             updated_by: req.user?.userId || null
         });
