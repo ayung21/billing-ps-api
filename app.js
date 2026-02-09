@@ -374,7 +374,7 @@ app.use((err, req, res, next) => {
 // 🚀 START SERVER
 // ============================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📡 WebSocket server ready on ws://localhost:${PORT}/ws`);
   console.log(`🌐 API available at http://localhost:${PORT}`);
