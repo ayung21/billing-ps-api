@@ -52,6 +52,9 @@ function initModels(sequelize) {
   transaksi_detail.belongsTo(produk, { as: 'produk', foreignKey: 'produk_token', targetKey: 'token' });
   produk.hasMany(transaksi_detail, { as: 'transaksi_details', foreignKey: 'produk_token', sourceKey: 'token' });
 
+  produk.belongsTo(cabang, { as: "cabang_detail", foreignKey: "cabang" });
+  cabang.hasMany(produk, { as: "produks", foreignKey: "cabang" });
+
   return {
     access,
     billingsave,
