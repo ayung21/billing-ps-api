@@ -26,7 +26,7 @@ try {
 }
 
 // Get all produk (protected)
-router.get('/', verifyToken, verifyRole([PERMISSIONS.VIEW_REPORT_PRODUCT]), async (req, res) => {
+router.get('/', verifyToken, verifyRole([PERMISSIONS.VIEW_REPORT_PRODUCT,PERMISSIONS.VIEW_PRODUCT]), async (req, res) => {
     try {
         const cabangaccess = [];
         if (!Produk) {
@@ -72,7 +72,14 @@ router.get('/', verifyToken, verifyRole([PERMISSIONS.VIEW_REPORT_PRODUCT]), asyn
             where: whereClause,
             limit: parseInt(limit),
             offset: parseInt(offset),
-            order: [['id', 'ASC']]
+            order: [['id', 'ASC']],
+            include: [
+                {
+                    model: Cabang,
+                    as: 'cabang_detail', // pastikan alias sesuai relasi di model
+                    attributes: ['id', 'name', 'alamat', 'status']
+                }
+            ]
         });
 
         res.json({
