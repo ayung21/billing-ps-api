@@ -20,6 +20,11 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.INTEGER,
       allowNull: false
     },
+    warning_level: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 5
+    },
     name: {
       type: DataTypes.STRING(50),
       allowNull: false
