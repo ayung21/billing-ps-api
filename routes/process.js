@@ -243,20 +243,18 @@ router.get("/time_out", async (req, res) => {
             let getTV;
             if (!checkunit) {
               getTV = await sequelize.query(`
-                SELECT b.tv_id, c.command FROM units u 
+                SELECT b.tv_id FROM units u 
                 JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = 'on/off' AND u.token = ?
+                WHERE u.status = 1 AND u.token = ?
               `, {
                 replacements: [unitToken],
                 type: sequelize.QueryTypes.SELECT,
               });
             } else {
               getTV = await sequelize.query(`
-                SELECT b.tv_id, c.command FROM units u 
+                SELECT b.tv_id FROM units u 
                 JOIN brandtv b ON b.id = u.brandtvid
-                JOIN codetv c ON c.id = b.codetvid
-                WHERE u.status = 1 AND c.desc = 'on/off' AND u.id = ?
+                WHERE u.status = 1 AND u.id = ?
               `, {
                 replacements: [checkunit.unitid],
                 type: sequelize.QueryTypes.SELECT
@@ -292,7 +290,7 @@ router.get("/time_out", async (req, res) => {
             }
 
             // ✅ Send command
-            await sendTVCommand(ws, tvInfo.tv_id, tvInfo.command, 'power_off_timeout');
+            await sendTVCommand(ws, tvInfo.tv_id, 26, 'power_off_timeout');
             console.log(`✅ Power off command sent to TV ${tvInfo.tv_id}`);
 
             // ✅ Wait for response (non-blocking per TV)
@@ -467,16 +465,15 @@ router.get("/sleep", async (req, res) => {
     }
 
     const getAll = await sequelize.query(`
-      SELECT b.tv_id, c.command FROM units u 
-      JOIN brandtv b ON b.id = u.brandtvid 
-      JOIN codetv c ON c.id = b.codetvid 
+      SELECT b.tv_id FROM units u 
+      JOIN brandtv b ON b.id = u.brandtvid
       WHERE u.token NOT IN(
         SELECT td.unit_token FROM transaksi t 
         JOIN transaksi_detail td ON td.code = t.code 
         WHERE t.status = 1 AND td.status = 1
         AND td.unit_token IS NOT NULL
       )
-      AND u.status = 1 AND c.desc = 'play/pause'
+      AND u.status = 1
     `, {
       type: sequelize.QueryTypes.SELECT
     });
@@ -505,7 +502,7 @@ router.get("/sleep", async (req, res) => {
           }
 
           // Send sleep command
-          await sendTVCommand(ws, unit.tv_id, unit.command, 'sleep_mode');
+          await sendTVCommand(ws, unit.tv_id, 26, 'sleep_mode');
           console.log(`✅ Sleep command sent to TV ${unit.tv_id}`);
 
           // Wait for response
@@ -513,7 +510,7 @@ router.get("/sleep", async (req, res) => {
           const tvResponse = await waitForTVResponse(
             tvResponses, 
             unit.tv_id, 
-            unit.command, 
+            26, 
             8000
           );
 
@@ -527,7 +524,7 @@ router.get("/sleep", async (req, res) => {
                 tv_id: unit.tv_id,
                 success: true,
                 message: 'Sleep command executed successfully',
-                command: unit.command,
+                command: 26,
                 command_status: tvResponse.status,
                 response_message: tvResponse.message,
                 response_time_ms: tvResponse.receivedAt ? 
@@ -541,7 +538,7 @@ router.get("/sleep", async (req, res) => {
               return {
                 tv_id: unit.tv_id,
                 success: false,
-                command: unit.command,
+                command: 26,
                 command_status: tvResponse.status,
                 message: tvResponse.message || 'Command failed',
                 error: tvResponse.error,
@@ -554,7 +551,7 @@ router.get("/sleep", async (req, res) => {
             return {
               tv_id: unit.tv_id,
               success: false,
-              command: unit.command,
+              command: 26,
               message: 'TV tidak merespon dalam 8 detik',
               timeout: true,
               waited_ms: 8000
@@ -919,7 +916,7 @@ router.post('/registertv', async (req, res) => {
         message: 'tv_id, modeltv, ip, and cabangid are required'
       });
     }
-console.log(req.body);
+    
     // Cek apakah tv_id sudah ada
     const existingTv = await Brandtv.findOne({ where: { tv_id } });
 
@@ -934,7 +931,6 @@ console.log(req.body);
     // Insert TV baru
     const newTv = await Brandtv.create({
       name: modeltv,
-      codetvid: 1,
       cabangid: parseInt(cabangid),
       tv_id: tv_id,
       ip_address: ip
