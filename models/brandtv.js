@@ -11,10 +11,6 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.STRING(25),
       allowNull: true
     },
-    codetvid: {
-      type: DataTypes.INTEGER,
-      allowNull: false
-    },
     cabangid: {
       type: DataTypes.INTEGER,
       allowNull: false
