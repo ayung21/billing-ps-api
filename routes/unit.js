@@ -62,7 +62,7 @@ router.get('/', verifyToken, verifyRole([PERMISSIONS.VIEW_UNIT_RENTAL]), async (
         includeOptions.push({
           model: Brandtv,
           as: 'brandtv',
-          attributes: ['id', 'name', 'codetvid', 'tv_id', 'ip_address'], // UPDATE: ip_address
+          attributes: ['id', 'name', 'tv_id', 'ip_address'], // UPDATE: ip_address
           required: false // LEFT JOIN
         });
       }
@@ -132,7 +132,7 @@ router.get('/available-tv/:id', verifyToken, async (req, res) => {
     try {
       // Menggunakan raw query dengan kolom yang benar
       const results = await sequelize.query(`
-        SELECT b.id, b.name, b.codetvid, b.ip_address, b.cabangid,
+        SELECT b.id, b.name, b.ip_address, b.cabangid,
                COUNT(*) OVER() as total_count
         FROM brandtv b 
         LEFT JOIN units u ON u.brandtvid = b.id AND u.status != 0
@@ -186,7 +186,7 @@ router.get('/available-tv/:id', verifyToken, async (req, res) => {
               )`)
             }
           },
-          attributes: ['id', 'name', 'codetvid', 'cabangid', 'ip_address'], // UPDATE: ip_address
+          attributes: ['id', 'name', 'cabangid', 'ip_address'], // UPDATE: ip_address
           limit: parsedLimit,
           offset: parsedOffset,
           order: [['name', 'ASC']]
@@ -268,22 +268,22 @@ router.get('/available-tv/edit/:id/:ids', verifyToken, async (req, res) => {
       // Menggunakan raw query dengan UNION dan GROUP BY - PERBAIKAN
       const results = await sequelize.query(`
         SELECT * FROM (
-          (SELECT b.id, b.name, b.codetvid, b.ip_address, b.cabangid,
+          (SELECT b.id, b.name, b.ip_address, b.cabangid,
                   'available' as status_type
            FROM brandtv b 
            LEFT JOIN units u ON u.brandtvid = b.id AND u.status != 0
            WHERE u.id IS NULL
            AND b.cabangid = ?
-           GROUP BY b.id, b.name, b.codetvid, b.ip_address, b.cabangid)
+           GROUP BY b.id, b.name, b.ip_address, b.cabangid)
           UNION 
-          (SELECT b.id, b.name, b.codetvid, b.ip_address, b.cabangid,
+          (SELECT b.id, b.name, b.ip_address, b.cabangid,
                   'current' as status_type
            FROM brandtv b 
            LEFT JOIN units u ON u.brandtvid = b.id 
            WHERE u.id = ?
            AND b.cabangid = ?
            AND u.status = 1
-           GROUP BY b.id, b.name, b.codetvid, b.ip_address, b.cabangid)
+           GROUP BY b.id, b.name, b.ip_address, b.cabangid)
         ) as combined_results
         ORDER BY status_type DESC, name ASC
         LIMIT ? OFFSET ?
@@ -354,13 +354,13 @@ router.get('/available-tv/edit/:id/:ids', verifyToken, async (req, res) => {
       try {
         // Get current TV (yang sedang digunakan oleh unit ini) - dengan GROUP BY
         const currentTv = await sequelize.query(`
-          SELECT b.id, b.name, b.codetvid, b.ip_address, b.cabangid
+          SELECT b.id, b.name, b.ip_address, b.cabangid
           FROM brandtv b 
           LEFT JOIN units u ON u.brandtvid = b.id 
           WHERE u.id = ?
           AND b.cabangid = ?
           AND u.status = 1
-          GROUP BY b.id, b.name, b.codetvid, b.ip_address, b.cabangid
+          GROUP BY b.id, b.name, b.ip_address, b.cabangid
         `, {
           replacements: [parsedUnitId, parsedCabangId],
           type: sequelize.QueryTypes.SELECT
@@ -371,14 +371,14 @@ router.get('/available-tv/edit/:id/:ids', verifyToken, async (req, res) => {
         const excludeIds = currentTvIds.length > 0 ? currentTvIds : [0]; // fallback jika tidak ada current TV
 
         const availableTvs = await sequelize.query(`
-          SELECT b.id, b.name, b.codetvid, b.ip_address, b.cabangid
+          SELECT b.id, b.name, b.ip_address, b.cabangid
           FROM brandtv b 
           LEFT JOIN units u ON u.brandtvid = b.id AND u.status != 0
           WHERE u.id IS NULL
           AND b.cabangid = ?
           AND u.status = 1
           AND b.id NOT IN (${excludeIds.map(() => '?').join(',')})
-          GROUP BY b.id, b.name, b.codetvid, b.ip_address, b.cabangid
+          GROUP BY b.id, b.name, b.ip_address, b.cabangid
           ORDER BY b.name ASC
         `, {
           replacements: [parsedCabangId, ...excludeIds],
@@ -470,7 +470,7 @@ router.get('/allactive/:id', verifyToken, async (req, res) => {
         includeOptions.push({
           model: Brandtv,
           as: 'brandtv',
-          attributes: ['id', 'name', 'codetvid', 'ip_address'], // UPDATE: ip_address
+          attributes: ['id', 'name', 'ip_address'], // UPDATE: ip_address
           required: false // LEFT JOIN
         });
       }
@@ -557,7 +557,7 @@ router.get('/allactiveready/:id', verifyToken, async (req, res) => {
         includeOptions.push({
           model: Brandtv,
           as: 'brandtv',
-          attributes: ['id', 'name', 'codetvid', 'ip_address'], // UPDATE: ip_address
+          attributes: ['id', 'name', 'ip_address'], // UPDATE: ip_address
           required: false // LEFT JOIN
         });
       }
@@ -628,7 +628,7 @@ router.get('/:id', verifyToken, async (req, res) => {
         includeOptions.push({
           model: Brandtv,
           as: 'brandtv',
-          attributes: ['id', 'name', 'codetvid', 'ip_address'], // UPDATE: ip_address
+          attributes: ['id', 'name', 'ip_address'], // UPDATE: ip_address
           required: false
         });
       }
