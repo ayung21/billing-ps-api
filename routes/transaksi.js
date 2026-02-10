@@ -382,9 +382,8 @@ router.post('/', verifyToken, async (req, res) => {
     // ✅ WEBSOCKET CONTROL - POWER ON TV
     console.log('Getting TV info for unit token:', unit_token);
     const getTV = await sequelize.query(`
-      SELECT b.tv_id, c.command FROM units u 
+      SELECT b.tv_id FROM units u 
       JOIN brandtv b ON b.id = u.brandtvid
-      JOIN codetv c ON c.id = b.codetvid
       WHERE u.status = 1 AND c.desc = 'on' AND u.token = ?
     `, {
       replacements: [unit_token],
@@ -415,7 +414,7 @@ router.post('/', verifyToken, async (req, res) => {
       });
     }
 
-    console.log(`Sending POWER ON command to TV: ${tvInfo.tv_id}, command: ${tvInfo.command}`);
+    console.log(`Sending POWER ON command to TV: ${tvInfo.tv_id}, command: 224`);
 
     try {
       // ✅ PERBAIKAN: Clear old response sebelum kirim command baru
@@ -425,14 +424,14 @@ router.post('/', verifyToken, async (req, res) => {
       }
 
       // ✅ Kirim command
-      await sendTVCommand(ws, tvInfo.tv_id, tvInfo.command, 'power_on');
+      await sendTVCommand(ws, tvInfo.tv_id, 224, 'power_on');
 
       // ✅ Tunggu response (Promise-based, non-blocking)
       console.log(`⏳ Menunggu response dari TV ${tvInfo.tv_id}...`);
       const tvResponse = await waitForTVResponse(
         tvResponses, 
         tvInfo.tv_id, 
-        tvInfo.command, 
+        224, 
         10000 // 10 detik timeout
       );
 
@@ -520,7 +519,7 @@ router.post('/', verifyToken, async (req, res) => {
             data: mappedData,
             ws_result: {
               tv_id: tvInfo.tv_id,
-              command: tvInfo.command,
+              command: 224,
               command_status: tvResponse.status,
               response_time_ms: tvResponse.receivedAt ? 
                 new Date(tvResponse.receivedAt) - new Date(tvResponse.timestamp) : null,
@@ -537,7 +536,7 @@ router.post('/', verifyToken, async (req, res) => {
             message: `Transaction cancelled - TV control failed`,
             error: {
               tv_id: tvInfo.tv_id,
-              command: tvInfo.command,
+              command: 224,
               command_status: tvResponse.status,
               message: tvResponse.message || 'Command execution failed',
               error: tvResponse.error,
@@ -555,7 +554,7 @@ router.post('/', verifyToken, async (req, res) => {
           message: 'Transaction cancelled - TV tidak merespon (timeout)',
           error: {
             tv_id: tvInfo.tv_id,
-            command: tvInfo.command,
+            command: 224,
             timeout: true,
             waited_ms: 10000
           }
@@ -1466,9 +1465,8 @@ router.post('/', verifyToken, async (req, res) => {
     // ✅ WEBSOCKET CONTROL - POWER ON TV
     console.log('Getting TV info for unit token:', unit_token);
     const getTV = await sequelize.query(`
-      SELECT b.tv_id, c.command FROM units u 
+      SELECT b.tv_id FROM units u 
       JOIN brandtv b ON b.id = u.brandtvid
-      JOIN codetv c ON c.id = b.codetvid
       WHERE u.status = 1 AND c.desc = 'on' AND u.token = ?
     `, {
       replacements: [unit_token],
@@ -1499,7 +1497,7 @@ router.post('/', verifyToken, async (req, res) => {
       });
     }
 
-    console.log(`Sending POWER ON command to TV: ${tvInfo.tv_id}, command: ${tvInfo.command}`);
+    console.log(`Sending POWER ON command to TV: ${tvInfo.tv_id}, command: 224`);
 
     try {
       // ✅ PERBAIKAN: Clear old response sebelum kirim command baru
@@ -1509,14 +1507,14 @@ router.post('/', verifyToken, async (req, res) => {
       }
 
       // ✅ Kirim command
-      await sendTVCommand(ws, tvInfo.tv_id, tvInfo.command, 'power_on');
+      await sendTVCommand(ws, tvInfo.tv_id, 224, 'power_on');
 
       // ✅ Tunggu response (Promise-based, non-blocking)
       console.log(`⏳ Menunggu response dari TV ${tvInfo.tv_id}...`);
       const tvResponse = await waitForTVResponse(
         tvResponses, 
         tvInfo.tv_id, 
-        tvInfo.command, 
+        224, 
         10000 // 10 detik timeout
       );
 
@@ -1604,7 +1602,7 @@ router.post('/', verifyToken, async (req, res) => {
             data: mappedData,
             ws_result: {
               tv_id: tvInfo.tv_id,
-              command: tvInfo.command,
+              command: 224,
               command_status: tvResponse.status,
               response_time_ms: tvResponse.receivedAt ? 
                 new Date(tvResponse.receivedAt) - new Date(tvResponse.timestamp) : null,
@@ -1621,7 +1619,7 @@ router.post('/', verifyToken, async (req, res) => {
             message: `Transaction cancelled - TV control failed`,
             error: {
               tv_id: tvInfo.tv_id,
-              command: tvInfo.command,
+              command: 224,
               command_status: tvResponse.status,
               message: tvResponse.message || 'Command execution failed',
               error: tvResponse.error,
@@ -1639,7 +1637,7 @@ router.post('/', verifyToken, async (req, res) => {
           message: 'Transaction cancelled - TV tidak merespon (timeout)',
           error: {
             tv_id: tvInfo.tv_id,
-            command: tvInfo.command,
+            command: 224,
             timeout: true,
             waited_ms: 10000
           }
