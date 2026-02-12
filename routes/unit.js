@@ -80,11 +80,11 @@ router.get('/', verifyToken, verifyRole([PERMISSIONS.VIEW_UNIT_RENTAL]), async (
     
     const units = await Unit.findAndCountAll({
       where: whereClause,
-      include: includeOptions,
       attributes: ['id', 'name', 'description', 'brandtvid' , 'cabangid', 'price', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
       limit: parseInt(limit),
       offset: parseInt(offset),
-      order: [['id', 'ASC']]
+      order: [['id', 'ASC']],
+      include: includeOptions,
     });
 
     res.json({
@@ -677,13 +677,33 @@ router.post('/', verifyToken, async (req, res) => {
         message: 'Units model not available'
       });
     }
-
-    const { name, description, cabang, brandtvid, status, price } = req.body;
+    const { name, description, cabang, cabangid, brandtvid, status, price } = req.body;
     
     if (!name) {
       return res.status(400).json({ 
         success: false, 
         message: 'Name is required' 
+      });
+    }
+
+    if(cabang || cabangid) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Use either cabang, not both.' 
+      });
+    }
+
+    if (brandtvid) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Use brandtv ID instead of brandtvid.' 
+      });
+    }
+
+    if(price){
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Price must be a number.' 
       });
     }
 
@@ -722,7 +742,7 @@ router.post('/', verifyToken, async (req, res) => {
       token: _token,
       name,
       description: description || null,
-      cabangid: cabang ? parseInt(cabang) : null,
+      cabangid: cabang ? parseInt(cabang) : (cabangid ? parseInt(cabangid) : null),
       brandtvid: brandtvid ? parseInt(brandtvid) : null,
       status: status !== undefined ? parseInt(status) : 1,
       price: price !== undefined ? parseFloat(price) : null,
@@ -736,7 +756,7 @@ router.post('/', verifyToken, async (req, res) => {
       name,
       description: description,
       brandtvid: brandtvid ? parseInt(brandtvid) : null,
-      cabangid: cabang ? parseInt(cabang) : null,
+      cabangid: cabang ? parseInt(cabang) : (cabangid ? parseInt(cabangid) : null),
       price: price !== undefined ? parseFloat(price) : null,
       status: 1,
       desc: 'Created',
@@ -786,7 +806,21 @@ router.put('/:id', verifyToken, async (req, res) => {
       });
     }
 
-    const { name, description, cabang, price, brandtvid, status } = req.body;
+    const brand = await Unit.findOne({
+      where: { 
+        brandtvid: req.body.brandtvid,
+        status : 1,
+       }
+    });
+
+    if(brand != null){
+      return res.status(409).json({
+        success: false,
+        message: 'Brand TV already used by another unit'
+      });
+    }
+
+    const { name, description, cabang, cabangid, price, brandtvid, status } = req.body;
 
     // Check if new name already exists (exclude current unit)
     if (name && name !== unit.name) {
@@ -806,56 +840,67 @@ router.put('/:id', verifyToken, async (req, res) => {
     }
 
     // Validate cabang exists if provided
-    if (cabang && Cabang) {
-      const parsedCabangId = parseInt(cabang);
-      if (!isNaN(parsedCabangId)) {
-        const cabangExists = await Cabang.findOne({
-          where: { 
-            id: parsedCabangId,
-            status: 1 
-          }
-        });
+    // if (cabang !== undefined && Cabang) {
+    //   const parsedCabangId = parseInt(cabang);
+    //   if (!isNaN(parsedCabangId)) {
+    //     const cabangExists = await Cabang.findOne({
+    //       where: { 
+    //         id: parsedCabangId,
+    //         status: 1 
+    //       }
+    //     });
 
-        if (!cabangExists) {
-          return res.status(400).json({
-            success: false,
-            message: 'Invalid cabang ID or cabang is inactive'
-          });
-        }
-      }
-    }
+    //     if (!cabangExists) {
+    //       return res.status(400).json({
+    //         success: false,
+    //         message: 'Invalid cabang ID or cabang is inactive'
+    //       });
+    //     }
+    //   }
+    // }
+    
+    // if (cabangid !== undefined && Cabang) {
+    //   const parsedCabangId = parseInt(cabangid);
+    //   if (!isNaN(parsedCabangId)) {
+    //     const cabangExists = await Cabang.findOne({
+    //       where: { 
+    //         id: parsedCabangId,
+    //         status: 1 
+    //       }
+    //     });
+
+    //     if (!cabangExists) {
+    //       return res.status(400).json({
+    //         success: false,
+    //         message: 'Invalid cabang ID or cabang is inactive'
+    //       });
+    //     }
+    //   }
+    // }
 
     // Validasi brandtvid jika ada
-    let parsedBrandtvId = unit.brandtvid;
-    if (brandtvid !== undefined) {
-      if (brandtvid === null || brandtvid === '') {
-        parsedBrandtvId = null;
-      } else {
-        parsedBrandtvId = parseInt(brandtvid);
-        if (isNaN(parsedBrandtvId)) {
-          return res.status(400).json({
-            success: false,
-            message: 'Invalid brandtv ID. Must be a number.'
-          });
-        }
-      }
+    if (brandtvid === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Use brandtv ID instead of brandtvid.'
+      });
     }
 
     // Validasi cabangid jika ada
-    let parsedCabangId = unit.cabangid;
-    if (cabang !== undefined) {
-      if (cabang === null || cabang === '') {
-        parsedCabangId = null;
-      } else {
-        parsedCabangId = parseInt(cabang);
-        if (isNaN(parsedCabangId)) {
-          return res.status(400).json({
-            success: false,
-            message: 'Invalid cabang ID. Must be a number.'
-          });
-        }
-      }
-    }
+    let parsedCabangId = cabang !== undefined ? cabang : cabangid;
+    // if (cabang !== undefined) {
+    //   if (cabang === null || cabang === '') {
+    //     parsedCabangId = null;
+    //   } else {
+    //     parsedCabangId = parseInt(cabang);
+    //     if (isNaN(parsedCabangId)) {
+    //       return res.status(400).json({
+    //         success: false,
+    //         message: 'Invalid cabang ID. Must be a number.'
+    //       });
+    //     }
+    //   }
+    // }
 
     // Validasi status jika ada
     let parsedStatus = unit.status;
@@ -870,14 +915,14 @@ router.put('/:id', verifyToken, async (req, res) => {
     }
 
     const _token = 'UNT-' + Math.random().toString(36).substring(2, 15); // Generate random token
-
+    
     // Create history record with description
     await HistoryUnits.create({
       token: _token,
       unitid: unit.id,
       name: name || unit.name,
       description: description !== undefined ? description : unit.description,
-      brandtvid: parsedBrandtvId,
+      brandtvid: brandtvid,
       cabangid: parsedCabangId,
       price: price !== undefined ? parseFloat(price) : unit.price,
       status: parsedStatus,
@@ -890,7 +935,7 @@ router.put('/:id', verifyToken, async (req, res) => {
       name: name || unit.name,
       description: description !== undefined ? description : unit.description,
       cabangid: parsedCabangId,
-      brandtvid: parsedBrandtvId,
+      brandtvid: brandtvid,
       price: price !== undefined ? parseFloat(price) : unit.price,
       status: parsedStatus,
       updated_by: req.user?.userId || unit.updated_by
