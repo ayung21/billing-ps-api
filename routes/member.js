@@ -2,18 +2,11 @@ const express = require('express');
 const { verifyToken, verifyAdmin, verifyUser } = require('../middleware/auth');
 const { sequelize } = require('../config/database');
 const { Op } = require('sequelize');
+const models = require('../models/init-models')(sequelize);
+const Cabang = models.cabang;
+const Member = models.member;
 
 const router = express.Router();
-
-// Import models
-let Member;
-try {
-  const initModels = require('../models/init-models');
-  const models = initModels(sequelize);
-  Member = models.member;
-} catch (error) {
-  console.error('Error loading models:', error);
-}
 
 // GET all members
 router.get('/', verifyToken, async (req, res) => {
@@ -37,16 +30,24 @@ router.get('/', verifyToken, async (req, res) => {
     if (search) {
       whereClause[Op.or] = [
         { name: { [Op.like]: `%${search}%` } },
-        { telepon: { [Op.like]: `%${search}%` } }
+        { telepon: { [Op.like]: `%${search}%` } },
+        { '$member_cabang_detail.name$': { [Op.like]: `%${search}%` } }
       ];
     }
 
     const members = await Member.findAndCountAll({
       where: whereClause,
-      attributes: ['id', 'name', 'telepon', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
+      attributes: ['id', 'name', 'telepon', 'status', 'cabang', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
       limit: parseInt(limit),
       offset: parseInt(offset),
-      order: [['status', 'DESC']]
+      order: [['status', 'DESC']],
+      include: [
+        {
+          model: Cabang,
+          as: 'member_cabang_detail',
+          attributes: ['id', 'name', 'status']
+        }
+      ]
     });
 
     res.json({
@@ -84,10 +85,17 @@ router.get('/activemember', verifyToken, async (req, res) => {
 
     const members = await Member.findAndCountAll({
       where: whereClause,
-      attributes: ['id', 'name', 'telepon', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
+      attributes: ['id', 'name', 'telepon', 'status', 'cabang', 'created_by', 'updated_by', 'createdAt', 'updatedAt'],
       limit: parseInt(limit),
       offset: parseInt(offset),
-      order: [['id', 'DESC']]
+      order: [['id', 'DESC']],
+      include: [
+        {
+          model: Cabang,
+          as: 'member_cabang_detail',
+          attributes: ['id', 'name', 'alamat', 'status']
+        }
+      ]
     });
 
     res.json({
@@ -121,7 +129,7 @@ router.get('/:id', verifyToken, async (req, res) => {
 
     const member = await Member.findOne({
       where: { id: parseInt(id) },
-      attributes: ['id', 'name', 'telepon', 'status', 'created_by', 'updated_by', 'createdAt', 'updatedAt']
+      attributes: ['id', 'name', 'telepon', 'status', 'cabang', 'created_by', 'updated_by', 'createdAt', 'updatedAt']
     });
 
     if (!member) {
@@ -155,7 +163,7 @@ router.post('/', verifyToken, async (req, res) => {
       });
     }
 
-    const { name, telepon, status } = req.body;
+    const { name, telepon, cabang, status } = req.body;
 
     // Validasi input
     if (!name || !telepon) {
@@ -170,7 +178,7 @@ router.post('/', verifyToken, async (req, res) => {
       where: { telepon, status: 1 }
     });
 
-    if (existingPhone) {
+    if (existingPhone && telepon != '000000000000') {
       return res.status(409).json({
         success: false,
         message: 'Phone number already exists'
@@ -181,6 +189,7 @@ router.post('/', verifyToken, async (req, res) => {
       name,
       telepon,
       status: status !== undefined ? parseInt(status) : 1,
+      cabang: cabang !== undefined ? parseInt(cabang) : 1,
       created_by: req.user?.userId || null,
       updated_by: req.user?.userId || null
     };
@@ -213,7 +222,7 @@ router.put('/:id', verifyToken, async (req, res) => {
     }
 
     const { id } = req.params;
-    const { name, telepon, status } = req.body;
+    const { name, telepon, cabang, status } = req.body;
 
     const member = await Member.findOne({
       where: { id: parseInt(id) }
