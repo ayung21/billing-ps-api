@@ -58,6 +58,9 @@ function initModels(sequelize) {
   units.belongsTo(cabang, { as: "unit_cabang_detail", foreignKey: "cabangid" });
   cabang.hasMany(units, { as: "unitss", foreignKey: "cabangid" });
 
+  member.belongsTo(cabang, { as: "member_cabang_detail", foreignKey: "cabang" });
+  cabang.hasMany(member, { as: "members", foreignKey: "cabang" });
+
   return {
     access,
     billingsave,
