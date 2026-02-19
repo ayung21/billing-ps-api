@@ -1,4 +1,5 @@
 const Sequelize = require('sequelize');
+const cabang = require('./cabang');
 module.exports = function(sequelize, DataTypes) {
   return sequelize.define('member', {
     id: {
@@ -14,6 +15,10 @@ module.exports = function(sequelize, DataTypes) {
     telepon: {
       type: DataTypes.STRING(15),
       allowNull: true
+    },
+    cabang: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
     },
     status: {
       type: DataTypes.INTEGER,
