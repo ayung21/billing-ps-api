@@ -599,6 +599,90 @@ router.get('/allactiveready/:id', verifyToken, async (req, res) => {
   }
 });
 
+router.get('/report', verifyToken, async (req, res) => {
+  try {
+    const { startDate, endDate, cabang, unit } = req.query;
+    // console.log('Received report request with parameters:', { startDate, endDate, cabang, unit });
+    // return;
+    let _unit = [];
+
+    if(cabang != undefined && unit != undefined) {
+        _unit = await sequelize.query(`
+          SELECT u.*, b.name as brand_name
+          FROM units u
+          JOIN brandtv b ON b.id = u.brandtvid
+          where u.id = ? and u.cabangid = ?
+        `, {
+          replacements: [unit, cabang],
+          type: sequelize.QueryTypes.SELECT
+        });
+    }else if(cabang && unit == undefined) {
+        _unit = await sequelize.query(`
+          SELECT u.*, b.name as brand_name
+          FROM units u
+          JOIN brandtv b ON b.id = u.brandtvid
+          where u.cabangid = ?
+        `, {
+          replacements: [cabang],
+          type: sequelize.QueryTypes.SELECT
+        });
+      }else {
+        _unit = await sequelize.query(`
+          SELECT u.*, b.name as brand_name
+          FROM units u
+          JOIN brandtv b ON b.id = u.brandtvid
+        `, {
+          type: sequelize.QueryTypes.SELECT
+        });
+      }
+
+    const transaksi = [];
+    for (const units of _unit) {
+      const history_units = await sequelize.query(`
+        select * from 
+        history_units hu
+        where hu.unitid = ?
+        `,{
+          replacements: [units.id],
+        type: sequelize.QueryTypes.SELECT
+      });
+
+      const token_unit = [];
+      for (const history of history_units) {
+        token_unit.push(history.token);
+      }
+
+      const count_hours = await sequelize.query(`
+          select count(hours) as count_hours, count(qty*harga) as count_price
+          from transaksi_detail
+          where unit_token IN (${token_unit.map(() => '?').join(',')})
+          and createdAt >= ? and createdAt <= ?
+        `,{
+        replacements: [...token_unit, startDate, endDate],
+        type: sequelize.QueryTypes.SELECT
+      });
+
+      transaksi.push({
+        brand_name: units.brand_name,
+        unit: units.name,
+        count_hours: count_hours[0].count_hours,
+        count_price: count_hours[0].count_price,
+        status: units.status
+      });
+    }
+    return res.json({
+      success: true,
+      data: transaksi
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Get unit by ID (protected)
 router.get('/:id', verifyToken, async (req, res) => {
   try {
@@ -810,6 +894,7 @@ router.put('/:id', verifyToken, async (req, res) => {
       where: { 
         brandtvid: req.body.brandtvid,
         status : 1,
+        id: { [Op.ne]: unitId } // Exclude current unit
        }
     });
 
