@@ -327,6 +327,118 @@ router.post('/report', verifyToken, async (req, res) => {
     }
 });
 
+router.get('/report/', verifyToken, async (req, res) => {
+    try {
+        const { startdate, enddate, cabang, type } = req.query;
+
+        if (!startdate || !enddate) {
+            return res.status(400).json({
+                success: false,
+                message: 'startdate and enddate are required'
+            });
+        }
+
+        let _produk = [];
+
+        if(cabang != undefined && type != undefined) {
+            _produk = await sequelize.query(`
+            SELECT p.*, c.name as cabang_name
+            FROM produk p
+            join cabang c on c.id = p.cabang
+            where p.cabang = ? AND p.type = ?
+            `, {
+                replacements: [cabang, type],
+                type: sequelize.QueryTypes.SELECT
+            });
+        }else if(cabang != undefined && type == undefined) {
+            _produk = await sequelize.query(`
+            SELECT p.*, c.name as cabang_name
+            FROM produk p
+            join cabang c on c.id = p.cabang
+            where p.cabang = ?
+            `, {
+                replacements: [cabang],
+                type: sequelize.QueryTypes.SELECT
+            });
+        }else if(cabang == undefined && type != undefined) {
+            _produk = await sequelize.query(`
+            SELECT p.*, c.name as cabang_name
+            FROM produk p
+            join cabang c on c.id = p.cabang
+            where p.type = ?
+            `, {
+                replacements: [type],
+                type: sequelize.QueryTypes.SELECT
+            });
+        }else {
+            _produk = await sequelize.query(`
+                SELECT p.*, c.name as cabang_name
+                FROM produk p
+                join cabang c on c.id = p.cabang
+            `, {
+                type: sequelize.QueryTypes.SELECT
+            });
+        }
+
+        const transaksi = [];
+        for (let produk of _produk) {
+            const history_produk = await sequelize.query(`
+                select * from 
+                history_produk hu
+                where hu.produkid = ?
+                `,{
+                replacements: [produk.id],
+                type: sequelize.QueryTypes.SELECT
+            });
+            
+            const token_unit = [];
+            let count_harga_beli = 0;
+            let count_harga_qty = 0;
+            let count_harga_price = 0;
+            for (const history of history_produk) {
+                // token_unit.push(history.token);
+
+                const count_qty = await sequelize.query(`
+                    select count(td.qty*hp.harga_beli) as count_harga_beli, count(td.qty) as count_qty, count(td.qty*td.harga) as count_harga_jual
+                    from transaksi_detail td
+                    join history_produk hp on hp.token = td.produk_token
+                    where td.produk_token = ?
+                    and td.createdAt >= ? and td.createdAt <= ?
+                    `,{
+                    replacements: [history.token, startdate, enddate],
+                    type: sequelize.QueryTypes.SELECT
+                });
+                count_harga_beli += count_qty[0].count_harga_beli;
+                count_harga_qty += count_qty[0].count_qty;
+                count_harga_price += count_qty[0].count_harga_jual;
+            }
+
+            transaksi.push({
+                name : produk.name,
+                count_harga_beli : count_harga_beli,
+                count_qty : count_harga_qty,
+                count_price : count_harga_price,
+                untung: count_harga_price - count_harga_beli,
+                cabang: produk.cabang_name,
+                stok : produk.stok,
+                status : produk.status
+            });
+
+        }
+        res.json({
+            success: true,
+            data: transaksi
+        });
+    } catch (error) {
+        console.error('Error generating sales report:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error generating sales report',
+            error: error.message
+        });
+    }
+})
+
 // Get produk by ID (protected)
 router.get('/:id', verifyToken, async (req, res) => {
     try {
