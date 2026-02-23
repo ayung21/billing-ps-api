@@ -444,6 +444,39 @@ router.get('/available-tv/edit/:id/:ids', verifyToken, async (req, res) => {
   }
 });
 
+router.get('/all/:id', verifyToken, async (req, res) => {
+  const cabang = req.params.id;
+  try {
+    let unit = [];
+    if(cabang != 0) {
+      unit = await sequelize.query(`
+        select * from units u
+        where cabangid = ? 
+        `,{
+        replacements: [cabang],
+        type: sequelize.QueryTypes.SELECT
+      });
+    }else {
+      unit = await sequelize.query(`
+        select * from units u
+        `,{
+        type: sequelize.QueryTypes.SELECT
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: unit
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 router.get('/allactive/:id', verifyToken, async (req, res) => {
   try {
     if (!Unit) {
@@ -608,9 +641,10 @@ router.get('/report', verifyToken, async (req, res) => {
 
     if(cabang != undefined && unit != undefined) {
         _unit = await sequelize.query(`
-          SELECT u.*, b.name as brand_name
+          SELECT u.*, b.name as brand_name, c.name as cabang_name
           FROM units u
           JOIN brandtv b ON b.id = u.brandtvid
+          join cabang c on c.id = u.cabangid
           where u.id = ? and u.cabangid = ?
         `, {
           replacements: [unit, cabang],
@@ -618,23 +652,36 @@ router.get('/report', verifyToken, async (req, res) => {
         });
     }else if(cabang && unit == undefined) {
         _unit = await sequelize.query(`
-          SELECT u.*, b.name as brand_name
+          SELECT u.*, b.name as brand_name, c.name as cabang_name
           FROM units u
           JOIN brandtv b ON b.id = u.brandtvid
+          join cabang c on c.id = u.cabangid
           where u.cabangid = ?
         `, {
           replacements: [cabang],
           type: sequelize.QueryTypes.SELECT
         });
-      }else {
+    }else if(cabang == undefined && unit != undefined) {
         _unit = await sequelize.query(`
-          SELECT u.*, b.name as brand_name
+          SELECT u.*, b.name as brand_name, c.name as cabang_name
           FROM units u
           JOIN brandtv b ON b.id = u.brandtvid
+          join cabang c on c.id = u.cabangid
+          where u.id = ?
         `, {
+          replacements: [unit],
           type: sequelize.QueryTypes.SELECT
         });
-      }
+    }else {
+      _unit = await sequelize.query(`
+        SELECT u.*, b.name as brand_name, c.name as cabang_name
+        FROM units u
+        JOIN brandtv b ON b.id = u.brandtvid
+        join cabang c on c.id = u.cabangid
+      `, {
+        type: sequelize.QueryTypes.SELECT
+      });
+    }
 
     const transaksi = [];
     for (const units of _unit) {
@@ -667,6 +714,7 @@ router.get('/report', verifyToken, async (req, res) => {
         unit: units.name,
         count_hours: count_hours[0].count_hours,
         count_price: count_hours[0].count_price,
+        cabang: units.cabang_name,
         status: units.status
       });
     }
@@ -770,21 +818,21 @@ router.post('/', verifyToken, async (req, res) => {
       });
     }
 
-    if(cabang || cabangid) {
+    if(cabang == undefined && !cabangid || !cabang && cabangid == undefined){ 
       return res.status(400).json({ 
         success: false, 
         message: 'Use either cabang, not both.' 
       });
     }
 
-    if (brandtvid) {
+    if (!brandtvid) {
       return res.status(400).json({ 
         success: false, 
         message: 'Use brandtv ID instead of brandtvid.' 
       });
     }
 
-    if(price){
+    if(!price){
       return res.status(400).json({ 
         success: false, 
         message: 'Price must be a number.' 
