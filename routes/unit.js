@@ -703,6 +703,7 @@ router.get('/report', verifyToken, async (req, res) => {
           select count(hours) as count_hours, count(qty*harga) as count_price
           from transaksi_detail
           where unit_token IN (${token_unit.map(() => '?').join(',')})
+          and status = 1
           and createdAt >= ? and createdAt <= ?
         `,{
         replacements: [...token_unit, startDate, endDate],
