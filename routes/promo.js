@@ -179,6 +179,47 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
+router.get('/getallpromo/:id', verifyToken, async (req, res) => {
+  try {
+
+    const cabang = parseInt(req.params.id);
+
+    let promo = [];
+    if(cabang == 0) {
+        promo = await sequelize.query(`
+          select p.name as promoname
+          from promo p
+          group by p.name
+        `,{
+        replacements: [cabang],
+        type: sequelize.QueryTypes.SELECT
+      });
+    } else {
+        promo = await sequelize.query(`
+          select p.name as promoname
+          from promo p
+          where p.cabangid = ?
+          group by p.name
+        `,{
+        replacements: [cabang],
+        type: sequelize.QueryTypes.SELECT
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: promo
+    });
+
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 router.get('/allactive/:id', verifyToken, async (req, res) => {
   try {
     if (!sequelize) {
@@ -320,10 +361,154 @@ router.get('/allactive/:id', verifyToken, async (req, res) => {
 
 router.get('/report', verifyToken, async (req, res) => {
   try {
-    
-  } catch (error) {
-    
-  }
+        const { startdate, enddate, cabang, promo, unit } = req.query;
+
+        if (!startdate || !enddate) {
+            return res.status(400).json({
+                success: false,
+                message: 'startdate and enddate are required'
+            });
+        }
+
+        let _promo = [];
+
+        if(cabang != undefined && promo != undefined && unit != undefined) {
+            _promo = await sequelize.query(`
+            SELECT p.*, c.name as cabang_name, u.name as unit_name
+            FROM promo p
+            join cabang c on c.id = p.cabangid
+            join units u on u.id = p.unitid
+            where p.cabangid = ? AND p.name = ? AND p.unitid = ?
+            `, {
+                replacements: [cabang, promo, unit],
+                type: sequelize.QueryTypes.SELECT
+            });
+        }else if(cabang != undefined && promo == undefined && unit == undefined) {
+            _promo = await sequelize.query(`
+            SELECT p.*, c.name as cabang_name, u.name as unit_name
+            FROM promo p
+            join cabang c on c.id = p.cabangid
+            join units u on u.id = p.unitid
+            where p.cabangid = ?
+            `, {
+                replacements: [cabang],
+                type: sequelize.QueryTypes.SELECT
+            });
+        }else if(cabang != undefined && promo != undefined && unit == undefined) {
+            _promo = await sequelize.query(`
+            SELECT p.*, c.name as cabang_name, u.name as unit_name
+            FROM promo p
+            join cabang c on c.id = p.cabangid
+            join units u on u.id = p.unitid
+            where p.cabangid = ? AND p.name = ?
+            `, {
+                replacements: [cabang, promo],
+                type: sequelize.QueryTypes.SELECT
+            });
+        }else if(cabang != undefined && promo == undefined && unit != undefined) {
+            _promo = await sequelize.query(`
+            SELECT p.*, c.name as cabang_name, u.name as unit_name
+            FROM promo p
+            join cabang c on c.id = p.cabangid
+            join units u on u.id = p.unitid
+            where p.cabangid = ? AND p.unitid = ?
+            `, {
+                replacements: [cabang, unit],
+                type: sequelize.QueryTypes.SELECT
+            });
+        }else if(cabang == undefined && promo != undefined && unit != undefined) {
+            _promo = await sequelize.query(`
+            SELECT p.*, c.name as cabang_name, u.name as unit_name
+            FROM promo p
+            join cabang c on c.id = p.cabangid
+            join units u on u.id = p.unitid
+            where p.name = ? AND p.unitid = ?
+            `, {
+                replacements: [promo, unit],
+                type: sequelize.QueryTypes.SELECT
+            });
+        }else if(cabang == undefined && promo != undefined && unit == undefined) {
+            _promo = await sequelize.query(`
+            SELECT p.*, c.name as cabang_name, u.name as unit_name
+            FROM promo p
+            join cabang c on c.id = p.cabangid
+            join units u on u.id = p.unitid
+            where p.name = ?
+            `, {
+                replacements: [promo],
+                type: sequelize.QueryTypes.SELECT
+            });
+        }else if(cabang == undefined && promo == undefined && unit != undefined) {
+            _promo = await sequelize.query(`
+            SELECT p.*, c.name as cabang_name, u.name as unit_name
+            FROM promo p
+            join cabang c on c.id = p.cabangid
+            join units u on u.id = p.unitid
+            where p.unitid = ?
+            `, {
+                replacements: [unit],
+                type: sequelize.QueryTypes.SELECT
+            });
+        }else {
+            _promo = await sequelize.query(`
+                SELECT p.*, c.name as cabang_name, u.name as unit_name
+                FROM promo p
+                join cabang c on c.id = p.cabangid
+                join units u on u.id = p.unitid
+            `, {
+                type: sequelize.QueryTypes.SELECT
+            });
+        }
+
+        const transaksi = [];
+        for (let promo of _promo) {
+            const history_promo = await sequelize.query(`
+                select * from 
+                history_promo hu
+                where hu.promoid = ?
+                `,{
+                replacements: [promo.id],
+                type: sequelize.QueryTypes.SELECT
+            });
+            
+            const tokenpromo = [];
+            for (const history of history_promo) {
+              tokenpromo.push(history.token);
+            }
+
+            const count = await sequelize.query(`
+                select count(promo_token) as penggunaan
+                from transaksi_detail td
+                join history_units ut on ut.token = td.unit_token
+                where promo_token IN (${tokenpromo.map(() => '?').join(',')})
+                and td.status = 1
+                and td.createdAt >= ? and td.createdAt <= ?
+              `,{
+              replacements: [...tokenpromo, startdate, enddate],
+              type: sequelize.QueryTypes.SELECT
+            });
+
+            transaksi.push({
+                name : promo.name,
+                count_pemakaian : count[0].penggunaan,
+                cabang: promo.cabang_name,
+                unit: promo.unit_name,
+                status : promo.status
+            });
+
+        }
+        res.json({
+            success: true,
+            data: transaksi
+        });
+    } catch (error) {
+        console.error('Error generating sales report:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error generating sales report',
+            error: error.message
+        });
+    }
 });
 
 // Get promo by ID (protected) - WITH JOINS - RAW QUERY ONLY
@@ -523,7 +708,7 @@ router.post('/', verifyToken, async (req, res) => {
 
       const insertHistory = await HistoryPromo.create({
         token: _token,
-        promoId: newPromoId,
+        promoid: newPromoId,
         name: name,
         unitid: parseInt(unitid),
         cabangid: cabangid,
