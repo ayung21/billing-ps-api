@@ -403,6 +403,7 @@ router.get('/report/', verifyToken, async (req, res) => {
                     from transaksi_detail td
                     join history_produk hp on hp.token = td.produk_token
                     where td.produk_token = ?
+                    and td.status = 1
                     and td.createdAt >= ? and td.createdAt <= ?
                     `,{
                     replacements: [history.token, startdate, enddate],
