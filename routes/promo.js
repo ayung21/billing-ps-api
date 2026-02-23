@@ -2,12 +2,11 @@ const express = require('express');
 const { verifyToken, verifyUser } = require('../middleware/auth');
 const { sequelize } = require('../config/database');
 const { Op } = require('sequelize');
-const history_promo = require('../models/history_promo');
 
 const router = express.Router();
 
 // Import model promo
-let Promo, Unit, Access, Cabang, HistoryProduk;
+let Promo, Unit, Access, Cabang, HistoryProduk, HistoryPromo;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
@@ -16,6 +15,7 @@ try {
   Access = models.access;
   Cabang = models.cabang;
   HistoryProduk = models.history_produk;
+  HistoryPromo = models.history_promo;
 
   if (!Promo) {
     console.error('❌ Promo model not found in models');
@@ -318,6 +318,14 @@ router.get('/allactive/:id', verifyToken, async (req, res) => {
   }
 });
 
+router.get('/report', verifyToken, async (req, res) => {
+  try {
+    
+  } catch (error) {
+    
+  }
+});
+
 // Get promo by ID (protected) - WITH JOINS - RAW QUERY ONLY
 router.get('/:id', verifyToken, async (req, res) => {
   try {
@@ -359,7 +367,7 @@ router.get('/:id', verifyToken, async (req, res) => {
       // Raw query untuk get by ID dengan JOIN
       const results = await sequelize.query(`
         SELECT p.id, p.name as promoname, p.discount_nominal, p.discount_percent, 
-               p.hours, p.status, p.created_at, p.updated_at, p.created_by, p.updated_by,
+               p.hours, p.status, p.createdAt, p.updatedAt, p.created_by, p.updated_by,
                u.id as unitid, u.name as unitname, u.price as unitprice, u.description as unitdescription,
                c.id as cabangid, c.name as cabangname
         FROM promo p 
@@ -420,7 +428,6 @@ router.post('/', verifyToken, async (req, res) => {
       hours, 
       status 
     } = req.body;
-    
     if (!name) {
       return res.status(400).json({ 
         success: false, 
@@ -514,7 +521,7 @@ router.post('/', verifyToken, async (req, res) => {
 
       const newPromoId = insertResult[0];
 
-      const insertHistory = await HistoryProduk.create({
+      const insertHistory = await HistoryPromo.create({
         token: _token,
         promoId: newPromoId,
         name: name,
@@ -659,7 +666,7 @@ router.put('/:id', verifyToken, async (req, res) => {
       // INSERT history_promo setelah update
       await sequelize.query(`
         INSERT INTO history_promo 
-        (token, promoid, name, unitid, cabangid, discount_percent, discount_nominal, hours, status, desc, created_by, createdAt)
+        (token, promoid, name, unitid, cabangid, discount_percent, discount_nominal, hours, status, \`desc\`, created_by, createdAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
       `, {
         replacements: [
