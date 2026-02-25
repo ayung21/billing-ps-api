@@ -22,9 +22,9 @@ router.get('/', verifyToken, async (req, res) => {
 
     // Build where clause
     let whereClause = {};
-    
+
     // if (status !== undefined) {
-      // whereClause.status = 1;
+    // whereClause.status = 1;
     // }
 
     if (search) {
@@ -59,8 +59,8 @@ router.get('/', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get members error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -107,10 +107,103 @@ router.get('/activemember', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get members error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+router.get('/report', verifyToken, async (req, res) => {
+  try {
+    const { startdate, enddate, name, cabang } = req.query;
+
+    if (!startdate || !enddate) {
+      return res.status(400).json({
+        success: false,
+        message: 'startdate and enddate are required'
+      });
+    }
+
+    let _member = [];
+
+    if (cabang != undefined && name != undefined) {
+      _member = await sequelize.query(`
+          SELECT r.*, c.name as cabang_name
+          FROM member r
+          join cabang c on c.id = r.cabang
+          where r.cabang = ? and r.name like ?
+          `, {
+        replacements: [cabang, `${name}%`],
+        type: sequelize.QueryTypes.SELECT
+      });
+    } else if (cabang != undefined && name == undefined) {
+      _member = await sequelize.query(`
+          SELECT r.*, c.name as cabang_name
+          FROM member r
+          join cabang c on c.id = r.cabang
+          where r.cabang = ?
+          `, {
+        replacements: [cabang],
+        type: sequelize.QueryTypes.SELECT
+      });
+    } else if (cabang == undefined && name != undefined) {
+      _member = await sequelize.query(`
+          SELECT r.*, c.name as cabang_name
+          FROM member r
+          join cabang c on c.id = r.cabang
+          where r.name like ?
+          `, {
+        replacements: [`${name}%`],
+        type: sequelize.QueryTypes.SELECT
+      });
+    } else {
+      _member = await sequelize.query(`
+          SELECT r.*, c.name as cabang_name
+          FROM member r
+          join cabang c on c.id = r.cabang
+          `, {
+        type: sequelize.QueryTypes.SELECT
+      });
+
+    }
+
+    const transaksi = [];
+    for (let member of _member) {
+
+      const count = await sequelize.query(`
+                select count(td.hours) as totaljam, ifnull(sum(t.grandtotal), 0) as total
+                from transaksi_detail td
+                join transaksi t on t.code = td.code
+                where t.memberid = ?
+                and td.status = 1
+                and td.createdAt >= ? and td.createdAt <= ?
+              `, {
+        replacements: [member.id, startdate, enddate],
+        type: sequelize.QueryTypes.SELECT
+      });
+
+      transaksi.push({
+        name: member.name,
+        phone: member.telepon,
+        count_jam: count[0].totaljam,
+        grandtotal: count[0].total,
+        cabang: member.cabang_name,
+        joindate: member.createdAt
+      });
+
+    }
+    res.json({
+      success: true,
+      data: transaksi
+    });
+  } catch (error) {
+    console.error('Error generating sales report:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error generating sales report',
+      error: error.message
     });
   }
 });
@@ -145,8 +238,8 @@ router.get('/:id', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get member by ID error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -203,8 +296,8 @@ router.post('/', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Create member error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -246,8 +339,8 @@ router.put('/:id', verifyToken, async (req, res) => {
     // Cek apakah telepon sudah ada di member lain
     if (telepon !== member.telepon) {
       const existingPhone = await Member.findOne({
-        where: { 
-          telepon, 
+        where: {
+          telepon,
           status: 1,
           id: { [Op.ne]: parseInt(id) }
         }
@@ -277,8 +370,8 @@ router.put('/:id', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Update member error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -328,8 +421,8 @@ router.delete('/:id', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Delete member error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
