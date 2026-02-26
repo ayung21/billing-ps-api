@@ -246,6 +246,7 @@ const produkRoutes = require('./routes/produk');
 const memberRoutes = require('./routes/member');
 const transaksiRoutes = require('./routes/transaksi');
 const processRoutes = require('./routes/process');
+const daily = require('./routes/daily');
 
 // Use routes
 app.use('/api/auth', authRoutes);
@@ -256,6 +257,7 @@ app.use('/api/produk', produkRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/transaksi', transaksiRoutes);
 app.use('/api/processcode', processRoutes);
+app.use('/api/daily', daily);
 
 // ============================
 // 🌐 API ENDPOINTS
