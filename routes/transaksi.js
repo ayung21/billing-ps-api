@@ -398,50 +398,50 @@ router.post('/', verifyToken, async (req, res) => {
       });
     }
 
-    // const tvInfo = getTV[0];
-    // const ws = tvConnections.get(tvInfo.tv_id);
+    const tvInfo = getTV[0];
+    const ws = tvConnections.get(tvInfo.tv_id);
 
-    // if (!ws || ws.readyState !== WebSocket.OPEN) {
-    //   await dbTransaction.rollback();
-    //   return res.status(503).json({
-    //     success: false,
-    //     message: `TV ${tvInfo.tv_id} tidak terhubung`,
-    //     debug: {
-    //       tv_id: tvInfo.tv_id,
-    //       wsExists: !!ws,
-    //       wsReadyState: ws?.readyState
-    //     }
-    //   });
-    // }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      await dbTransaction.rollback();
+      return res.status(503).json({
+        success: false,
+        message: `TV ${tvInfo.tv_id} tidak terhubung`,
+        debug: {
+          tv_id: tvInfo.tv_id,
+          wsExists: !!ws,
+          wsReadyState: ws?.readyState
+        }
+      });
+    }
 
-    // console.log(`Sending POWER ON command to TV: ${tvInfo.tv_id}, command: 224`);
+    console.log(`Sending POWER ON command to TV: ${tvInfo.tv_id}, command: 224`);
 
-    // try {
+    try {
       // ✅ PERBAIKAN: Clear old response sebelum kirim command baru
-      // if (tvResponses.has(tvInfo.tv_id)) {
-      //   console.log(`🧹 Clearing old response for TV ${tvInfo.tv_id}`);
-      //   tvResponses.delete(tvInfo.tv_id);
-      // }
+      if (tvResponses.has(tvInfo.tv_id)) {
+        console.log(`🧹 Clearing old response for TV ${tvInfo.tv_id}`);
+        tvResponses.delete(tvInfo.tv_id);
+      }
 
       // ✅ Kirim command
-      // await sendTVCommand(ws, tvInfo.tv_id, 224, 'power_on');
+      await sendTVCommand(ws, tvInfo.tv_id, 224, 'power_on');
 
       // ✅ Tunggu response (Promise-based, non-blocking)
-      // console.log(`⏳ Menunggu response dari TV ${tvInfo.tv_id}...`);
-      // const tvResponse = await waitForTVResponse(
-      //   tvResponses, 
-      //   tvInfo.tv_id, 
-      //   224, 
-      //   10000 // 10 detik timeout
-      // );
+      console.log(`⏳ Menunggu response dari TV ${tvInfo.tv_id}...`);
+      const tvResponse = await waitForTVResponse(
+        tvResponses, 
+        tvInfo.tv_id, 
+        224, 
+        10000 // 10 detik timeout
+      );
 
       // ✅ PERBAIKAN: Evaluasi response dengan handling lengkap
-      // if (tvResponse) {
+      if (tvResponse) {
         // Clear response setelah digunakan
-        // tvResponses.delete(tvInfo.tv_id);
+        tvResponses.delete(tvInfo.tv_id);
 
-        // if (tvResponse.status === 'success') {
-        //   console.log(`✅ TV ${tvInfo.tv_id} berhasil dinyalakan`);
+        if (tvResponse.status === 'success') {
+          console.log(`✅ TV ${tvInfo.tv_id} berhasil dinyalakan`);
 
           // WebSocket berhasil, commit transaksi
           await dbTransaction.commit();
@@ -517,64 +517,64 @@ router.post('/', verifyToken, async (req, res) => {
             success: true,
             message: 'Transaction created successfully and TV turned on',
             data: mappedData,
-            // ws_result: {
-              // tv_id: tvInfo.tv_id,
-              // command: 224,
-              // command_status: tvResponse.status,
-              // response_time_ms: tvResponse.receivedAt ? 
-              //   new Date(tvResponse.receivedAt) - new Date(tvResponse.timestamp) : null,
-              // timestamp: tvResponse.timestamp
-            // }
+            ws_result: {
+              tv_id: tvInfo.tv_id,
+              command: 224,
+              command_status: tvResponse.status,
+              response_time_ms: tvResponse.receivedAt ? 
+                new Date(tvResponse.receivedAt) - new Date(tvResponse.timestamp) : null,
+              timestamp: tvResponse.timestamp
+            }
           });
 
-      //   } else if (tvResponse.status === 'failed' || tvResponse.status === 'error') {
-      //     await dbTransaction.rollback();
-      //     console.error(`❌ TV ${tvInfo.tv_id} gagal eksekusi: ${tvResponse.error}`);
+        } else if (tvResponse.status === 'failed' || tvResponse.status === 'error') {
+          await dbTransaction.rollback();
+          console.error(`❌ TV ${tvInfo.tv_id} gagal eksekusi: ${tvResponse.error}`);
           
-      //     return res.status(503).json({
-      //       success: false,
-      //       message: `Transaction cancelled - TV control failed`,
-      //       error: {
-      //         tv_id: tvInfo.tv_id,
-      //         command: 224,
-      //         command_status: tvResponse.status,
-      //         message: tvResponse.message || 'Command execution failed',
-      //         error: tvResponse.error,
-      //         timestamp: tvResponse.timestamp
-      //       }
-      //     });
-      //   }
-      // } else {
-      //   // ✅ PERBAIKAN: Timeout handling
-      //   await dbTransaction.rollback();
-      //   console.warn(`⏱️ TV ${tvInfo.tv_id} tidak merespon dalam 10 detik`);
+          return res.status(503).json({
+            success: false,
+            message: `Transaction cancelled - TV control failed`,
+            error: {
+              tv_id: tvInfo.tv_id,
+              command: 224,
+              command_status: tvResponse.status,
+              message: tvResponse.message || 'Command execution failed',
+              error: tvResponse.error,
+              timestamp: tvResponse.timestamp
+            }
+          });
+        }
+      } else {
+        // ✅ PERBAIKAN: Timeout handling
+        await dbTransaction.rollback();
+        console.warn(`⏱️ TV ${tvInfo.tv_id} tidak merespon dalam 10 detik`);
         
-      //   return res.status(408).json({
-      //     success: false,
-      //     message: 'Transaction cancelled - TV tidak merespon (timeout)',
-      //     error: {
-      //       tv_id: tvInfo.tv_id,
-      //       command: 224,
-      //       timeout: true,
-      //       waited_ms: 10000
-      //     }
-      //   });
-      // }
+        return res.status(408).json({
+          success: false,
+          message: 'Transaction cancelled - TV tidak merespon (timeout)',
+          error: {
+            tv_id: tvInfo.tv_id,
+            command: 224,
+            timeout: true,
+            waited_ms: 10000
+          }
+        });
+      }
 
-    // } catch (wsError) {
-    //   // await dbTransaction.rollback();
-    //   // console.error('WebSocket error during TV control:', wsError);
+    } catch (wsError) {
+      await dbTransaction.rollback();
+      console.error('WebSocket error during TV control:', wsError);
       
-    //   return res.status(503).json({
-    //     success: false,
-    //     message: 'Transaction cancelled - Failed to control TV',
-    //     error: {
-    //       tv_id: tvInfo.tv_id,
-    //       message: wsError.message,
-    //       stack: process.env.NODE_ENV === 'development' ? wsError.stack : undefined
-    //     }
-    //   });
-    // }
+      return res.status(503).json({
+        success: false,
+        message: 'Transaction cancelled - Failed to control TV',
+        error: {
+          tv_id: tvInfo.tv_id,
+          message: wsError.message,
+          stack: process.env.NODE_ENV === 'development' ? wsError.stack : undefined
+        }
+      });
+    }
 
   } catch (error) {
     try {
