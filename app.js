@@ -232,7 +232,11 @@ const cleanupInterval = setInterval(() => {
 // ============================
 // 🔧 EXPRESS SETUP
 // ============================
-app.use(cors());
+// app.use(cors());
+const corsOptions = process.env.NODE_ENV === 'production'
+  ? { origin: 'https://namecholdings.my.id', optionsSuccessStatus: 200 }
+  : { origin: '*' };
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(requestLogger);
@@ -376,7 +380,7 @@ app.use((err, req, res, next) => {
 // 🚀 START SERVER
 // ============================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📡 WebSocket server ready on ws://localhost:${PORT}/ws`);
   console.log(`🌐 API available at http://localhost:${PORT}`);
