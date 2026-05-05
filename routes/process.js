@@ -9,6 +9,7 @@ const router = express.Router();
 
 // Import models
 let Transaksi, history_units, TransaksiDetail, Unit, Brandtv;
+let isSleepRunning = false;
 try {
   const initModels = require('../models/init-models');
   const models = initModels(sequelize);
@@ -134,6 +135,14 @@ const sendTVCommand = async (ws, tv_id, command, target = 'control') => {
   }
 };
 
+const verifyCronSecret = (req, res, next) => {
+  const secret = req.headers['x-cron-secret'];
+  if (!secret || secret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+  next();
+};
+
 router.get('/', (req, res) => {
   res.json({
     message: 'Billing PS API - WebSocket Control Endpoint is active.',
@@ -143,7 +152,7 @@ router.get('/', (req, res) => {
 });
 
 // ✅ IMPROVED: Time Out Endpoint (Parallel Processing)
-router.get("/time_out", async (req, res) => {
+router.get("/time_out", verifyCronSecret, async (req, res) => {
   console.log('🔔 Time out endpoint called');
   
   try {
@@ -290,7 +299,7 @@ router.get("/time_out", async (req, res) => {
             }
 
             // ✅ Send command
-            await sendTVCommand(ws, tvInfo.tv_id, 26, 'power_off_timeout');
+            await sendTVCommand(ws, tvInfo.tv_id, 223, 'power_off_timeout');
             console.log(`✅ Power off command sent to TV ${tvInfo.tv_id}`);
 
             // ✅ Wait for response (non-blocking per TV)
@@ -298,7 +307,7 @@ router.get("/time_out", async (req, res) => {
             const tvResponse = await waitForTVResponse(
               tvResponses, 
               tvInfo.tv_id, 
-              tvInfo.command, 
+              223, 
               10000
             );
 
@@ -321,7 +330,7 @@ router.get("/time_out", async (req, res) => {
                   total_hours: totalHours,
                   end_time: endTime,
                   transaction_updated: true,
-                  command_sent: tvInfo.command,
+                  command_sent: 223,
                   command_status: tvResponse.status,
                   response_time_ms: tvResponse.receivedAt ? 
                     new Date(tvResponse.receivedAt) - new Date(tvResponse.timestamp) : null,
@@ -342,7 +351,7 @@ router.get("/time_out", async (req, res) => {
                   transaction_code: transaksi.code,
                   tv_id: tvInfo.tv_id,
                   success: false,
-                  command_sent: tvInfo.command,
+                  command_sent: 223,
                   command_status: tvResponse.status,
                   message: tvResponse.message || 'Command execution failed',
                   error: tvResponse.error,
@@ -357,7 +366,7 @@ router.get("/time_out", async (req, res) => {
                 transaction_code: transaksi.code,
                 tv_id: tvInfo.tv_id,
                 success: false,
-                command_sent: tvInfo.command,
+                command_sent: 223,
                 message: 'TV tidak merespon dalam 10 detik',
                 timeout: true,
                 waited_ms: 10000
@@ -450,9 +459,12 @@ router.get("/time_out", async (req, res) => {
 });
 
 // ✅ IMPROVED: Sleep Endpoint (Parallel Processing)
-router.get("/sleep", async (req, res) => {
+router.get("/sleep", verifyCronSecret, async (req, res) => {
   console.log('😴 Sleep mode endpoint called');
-  
+  if (isSleepRunning) {
+    return res.status(429).json({ success: false, message: 'Sleep process already running' });
+  }
+  isSleepRunning = true;
   try {
     const tvConnections = req.app.locals.tvConnections;
     const tvResponses = req.app.locals.tvResponses;
@@ -502,7 +514,7 @@ router.get("/sleep", async (req, res) => {
           }
 
           // Send sleep command
-          await sendTVCommand(ws, unit.tv_id, 26, 'sleep_mode');
+          await sendTVCommand(ws, unit.tv_id, 223, 'sleep_mode');
           console.log(`✅ Sleep command sent to TV ${unit.tv_id}`);
 
           // Wait for response
@@ -510,8 +522,8 @@ router.get("/sleep", async (req, res) => {
           const tvResponse = await waitForTVResponse(
             tvResponses, 
             unit.tv_id, 
-            26, 
-            8000
+            223, 
+            10000
           );
 
           if (tvResponse) {
@@ -524,7 +536,7 @@ router.get("/sleep", async (req, res) => {
                 tv_id: unit.tv_id,
                 success: true,
                 message: 'Sleep command executed successfully',
-                command: 26,
+                command: 223,
                 command_status: tvResponse.status,
                 response_message: tvResponse.message,
                 response_time_ms: tvResponse.receivedAt ? 
@@ -538,7 +550,7 @@ router.get("/sleep", async (req, res) => {
               return {
                 tv_id: unit.tv_id,
                 success: false,
-                command: 26,
+                command: 223,
                 command_status: tvResponse.status,
                 message: tvResponse.message || 'Command failed',
                 error: tvResponse.error,
@@ -546,15 +558,15 @@ router.get("/sleep", async (req, res) => {
               };
             }
           } else {
-            console.warn(`⏱️ TV ${unit.tv_id} tidak merespon dalam 8 detik`);
+            console.warn(`⏱️ TV ${unit.tv_id} tidak merespon dalam 10 detik`);
 
             return {
               tv_id: unit.tv_id,
               success: false,
-              command: 26,
-              message: 'TV tidak merespon dalam 8 detik',
+              command: 223,
+              message: 'TV tidak merespon dalam 10 detik',
               timeout: true,
-              waited_ms: 8000
+              waited_ms: 10000
             };
           }
 
@@ -633,6 +645,8 @@ router.get("/sleep", async (req, res) => {
       message: "Terjadi kesalahan internal.",
       error: error.message
     });
+  } finally {
+    isSleepRunning = false;
   }
 });
 
