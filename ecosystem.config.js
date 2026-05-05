@@ -10,11 +10,13 @@ module.exports = {
       env: {
         NODE_ENV: 'development',
         PORT: 3003,
+        CRON_SECRET: '29e1c9deb332d59d9898a8a45595300427a263e714920c7f8260d411e89638fd',
         STATUSTV_LOG_PATH: './logs/statustv.log'
       },
       env_production: {
         NODE_ENV: 'production',
         PORT: 3003,
+        CRON_SECRET: '29e1c9deb332d59d9898a8a45595300427a263e714920c7f8260d411e89638fd',
         STATUSTV_LOG_PATH: './logs/statustv.log'
       },
       
