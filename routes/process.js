@@ -105,6 +105,7 @@ const sendTVCommand = async (ws, tv_id, command, target = 'control') => {
     const payload = {
       type: 'command',
       tv_id: String(tv_id), // ✅ Konversi ke string
+      tvId: String(tv_id),   // ✅ Backup field: camelCase
       command: parseInt(command), // ✅ Konversi ke number
       target: String(target),
       timestamp: new Date().toISOString()
@@ -208,7 +209,7 @@ router.get("/time_out", verifyCronSecret, async (req, res) => {
           unitGroups[detail.unit_token].allDetails.push(detail);
           unitGroups[detail.unit_token].totalHours += detail.hours || 0;
           
-          if (detail.type === 0) {
+          if (detail.type === 0 || detail.type === null) {
             unitGroups[detail.unit_token].initialDetail = detail;
           }
         });
