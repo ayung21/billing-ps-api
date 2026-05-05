@@ -400,6 +400,7 @@ router.post('/', verifyToken, async (req, res) => {
 
     const tvInfo = getTV[0];
     const ws = tvConnections.get(tvInfo.tv_id);
+    console.log('ws:', ws ? `WebSocket found for TV ${tvInfo.tv_id}` : 'No WebSocket found for TV', { tv_id: tvInfo.tv_id, wsExists: !!ws, wsReadyState: ws?.readyState });
 
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       await dbTransaction.rollback();
@@ -589,6 +590,350 @@ router.post('/', verifyToken, async (req, res) => {
       success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+router.get('/', verifyToken, async (req, res) => {
+  try {
+    if (!Transaksi) {
+      return res.status(500).json({
+        success: false,
+        message: 'Transaksi model not available'
+      });
+    }
+
+    const { status, memberid, limit = 50, offset = 0, include_details = false } = req.query;
+    let cabangaccess = [];
+    let whereClause = {};
+
+    const _access = await Access.findAll({
+      where: {
+        userId: req.user.id  // ✅ Fixed: pakai req.user.id
+      }
+    });
+
+    for (const __access of _access) {
+      cabangaccess.push(__access.cabangid);
+    }
+
+    whereClause.cabangid = { [Op.in]: cabangaccess };
+
+    const includeOptions = [
+      {
+        model: TransaksiDetail,
+        as: 'details',
+        required: false,
+        where: { status: 1 },
+        include: [
+          {
+            model: Unit,
+            as: 'unit',
+            required: false
+          },
+          {
+            model: Promo,
+            as: 'promo',
+            required: false
+          },
+          {
+            model: Produk,
+            as: 'produk',
+            required: false
+          }
+        ]
+      }
+    ];
+
+    const transactions = await Transaksi.findAndCountAll({
+      where: whereClause,
+      include: includeOptions,
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      order: [['status', 'DESC']]
+    });
+
+    // Mapping hasil dengan grouping
+    const mappedData = transactions.rows.map(trx => {
+      // Extract produk items
+      const produkItems = (trx.details || [])
+        .filter(d => d.produk)
+        .map(d => ({
+          product_id: d.id,
+          token: d.produk_token || d.token || null,
+          name: d.produk?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          produk_detail: d.produk
+        }));
+      
+      // Extract unit items
+      const unitItems = (trx.details || [])
+        .filter(d => d.unit)
+        .map(d => ({
+          unit_id: d.id,
+          token: d.unit_token || d.token || null,
+          name: d.unit?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          hours: d.hours || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          unit_detail: d.unit
+        }));
+      
+      // Extract promo items
+      const promoItems = (trx.details || [])
+        .filter(d => d.promo)
+        .map(d => ({
+          promo_id: d.id,
+          token: d.promo_token || d.token || null,
+          name: d.promo?.name || d.name,
+          quantity: d.qty || d.quantity || 1,
+          price: d.harga || d.price || 0,
+          total: ((d.harga || d.price || 0) * (d.qty || d.quantity || 1)),
+          promo_detail: d.promo
+        }));
+      
+      return {
+        code: trx.code,
+        memberid: trx.memberid,
+        customer: trx.customer,
+        telepon: trx.telepon,
+        grandtotal: trx.grandtotal,
+        cabangid: trx.cabangid,
+        status: trx.status,
+        created_by: trx.created_by,
+        updated_by: trx.updated_by,
+        createdAt: trx.createdAt,
+        updatedAt: trx.updatedAt,
+        produk: groupItemsByToken(produkItems),   // ✅ Apply grouping
+        unit: groupItemsByToken(unitItems),       // ✅ Apply grouping
+        promo: groupItemsByToken(promoItems)      // ✅ Apply grouping
+      };
+    });
+
+    res.json({
+      success: true,
+      data: mappedData,
+      total: transactions.count,
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+
+  } catch (error) {
+    console.error('Get transactions error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+router.get('/offtv/:code', verifyToken, async (req, res) => {
+  const dbTransaction = await sequelize.transaction();
+  try {
+    const { code } = req.params;
+
+    // ✅ Ambil tvConnections & tvResponses dari app.locals
+    const tvConnections = req.app.locals.tvConnections;
+    const tvResponses = req.app.locals.tvResponses;
+
+    if (!tvConnections || !tvResponses) {
+      await dbTransaction.rollback();
+      return res.status(500).json({
+        success: false,
+        message: 'WebSocket services not available'
+      });
+    }
+
+    const getTV = await sequelize.query(`
+       select b.tv_id from transaksi_detail dt
+       join units u on u.token = dt.unit_token
+       join brandtv b on b.id = u.brandtvid
+       where dt.code = :code
+       and dt.unit_token is not null  
+    `, {
+      replacements: { code },
+      type: sequelize.QueryTypes.SELECT
+    });
+
+    if (!getTV || getTV.length === 0) {
+      await dbTransaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'TV configuration not found for this transaction'
+      });
+    }
+
+    const tvInfo = getTV[0];
+    const ws = tvConnections.get(tvInfo.tv_id);
+    console.log('ws:', ws ? `WebSocket found for TV ${tvInfo.tv_id}` : 'No WebSocket found for TV', { tv_id: tvInfo.tv_id, wsExists: !!ws, wsReadyState: ws?.readyState });
+
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      await dbTransaction.rollback();
+      return res.status(503).json({
+        success: false,
+        message: `TV ${tvInfo.tv_id} tidak terhubung`,
+        debug: {
+          tv_id: tvInfo.tv_id,
+          wsExists: !!ws,
+          wsReadyState: ws?.readyState
+        }
+      });
+    }
+
+    try {
+      // Clear old response sebelum kirim command baru
+      if (tvResponses.has(tvInfo.tv_id)) {
+        console.log(`🧹 Clearing old response for TV ${tvInfo.tv_id}`);
+        tvResponses.delete(tvInfo.tv_id);
+      }
+
+      // ✅ Kirim command power_off (223)
+      await sendTVCommand(ws, tvInfo.tv_id, 223, 'power_off');
+
+      console.log(`⏳ Menunggu response dari TV ${tvInfo.tv_id}...`);
+      const tvResponse = await waitForTVResponse(
+        tvResponses,
+        tvInfo.tv_id,
+        223,
+        10000 // 10 detik timeout
+      );
+
+      if (tvResponse) {
+        tvResponses.delete(tvInfo.tv_id);
+
+        if (tvResponse.status === 'success') {
+          console.log(`✅ TV ${tvInfo.tv_id} berhasil dimatikan`);
+
+          const trx = await Transaksi.findOne({ where: { code } });
+
+          if (!trx) {
+            await dbTransaction.rollback();
+            return res.status(404).json({
+              success: false,
+              message: 'Transaction not found'
+            });
+          }
+
+          await trx.update({ status: 0 }, { transaction: dbTransaction });
+
+          await dbTransaction.commit();
+
+          return res.status(200).json({
+            success: true,
+            message: 'TV turned off and transaction closed successfully',
+            data: trx,
+            ws_result: {
+              tv_id: tvInfo.tv_id,
+              command: 223,
+              command_status: tvResponse.status,
+              response_time_ms: tvResponse.receivedAt ?
+                new Date(tvResponse.receivedAt) - new Date(tvResponse.timestamp) : null,
+              timestamp: tvResponse.timestamp
+            }
+          });
+
+        } else if (tvResponse.status === 'failed' || tvResponse.status === 'error') {
+          await dbTransaction.rollback();
+          console.error(`❌ TV ${tvInfo.tv_id} gagal eksekusi: ${tvResponse.error}`);
+
+          return res.status(503).json({
+            success: false,
+            message: 'Transaction cancelled - TV control failed',
+            error: {
+              tv_id: tvInfo.tv_id,
+              command: 223,
+              command_status: tvResponse.status,
+              message: tvResponse.message || 'Command execution failed',
+              error: tvResponse.error,
+              timestamp: tvResponse.timestamp
+            }
+          });
+        }
+      } else {
+        await dbTransaction.rollback();
+        console.warn(`⏱️ TV ${tvInfo.tv_id} tidak merespon dalam 10 detik`);
+
+        return res.status(408).json({
+          success: false,
+          message: 'Transaction cancelled - TV tidak merespon (timeout)',
+          error: {
+            tv_id: tvInfo.tv_id,
+            command: 223,
+            timeout: true,
+            waited_ms: 10000
+          }
+        });
+      }
+
+    } catch (wsError) {
+      await dbTransaction.rollback();
+      console.error('WebSocket error during TV control:', wsError);
+
+      return res.status(503).json({
+        success: false,
+        message: 'Transaction cancelled - Failed to control TV',
+        error: {
+          tv_id: tvInfo.tv_id,
+          message: wsError.message,
+          stack: process.env.NODE_ENV === 'development' ? wsError.stack : undefined
+        }
+      });
+    }
+  } catch (error) {
+    try {
+      await dbTransaction.rollback();
+    } catch (rollbackError) {
+      console.error('Rollback error:', rollbackError);
+    }
+    console.error('❌ Error processing transaction:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Transaction cancelled - internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+router.get('/withoutofftv/:code', verifyToken, async (req, res) => {
+  try {
+    const { code } = req.params;
+    console.log('Attempting to cancel transaction without TV control, code:', code);
+    const dbTransaction = await sequelize.transaction();
+
+    const trx = await Transaksi.findOne({where: { code }});
+
+    if (!trx) {
+      await dbTransaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
+      });
+    }
+
+    await trx.update({ status: 0 }, { transaction: dbTransaction });
+
+    await dbTransaction.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Transaction updated successfully',
+      data: trx
+    });
+
+  } catch (error) {
+    console.error('❌ Error processing transaction:', error);
+    // await dbTransaction.rollback();
+    return res.status(500).json({
+      success: false,
+      message: 'Transaction cancelled - internal server error',
+      error: {
+        message: error.message,
+        stack: error.stack
+      }
     });
   }
 });
