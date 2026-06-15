@@ -1,7 +1,7 @@
 const express = require('express');
 const { verifyToken, verifyAdmin, verifyUser } = require('../middleware/auth');
 const { sequelize } = require('../config/database');
-const { Op } = require('sequelize');
+const { Op, Transaction } = require('sequelize');
 const { logError, logInfo } = require('../middleware/logger');
 const WebSocket = require('ws');
 
@@ -143,31 +143,66 @@ const sendTVCommand = async (ws, tvId, command, target = 'control') => {
   }
 };
 
-// Generate transaction code with sequential number
-const generateTransactionCode = async () => {
+// Generate transaction code: TRX{YYYY}{MM}{####} from highest existing code this month
+const generateTransactionCode = async ({ dbTransaction = null, useLock = false } = {}) => {
   const now = new Date();
   const year = now.getFullYear().toString();
   const month = (now.getMonth() + 1).toString().padStart(2, '0');
-
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
-  const endOfDay = new Date(now.getFullYear(), now.getMonth(), 31, 23, 59, 59);
+  const prefix = `TRX${year}${month}`;
 
   try {
-    const todayTransactionCount = await Transaksi.count({
-      where: {
-        createdAt: {
-          [Op.between]: [startOfDay, endOfDay]
-        }
-      }
-    });
+    const findOptions = {
+      where: { code: { [Op.like]: `${prefix}%` } },
+      order: [['code', 'DESC']],
+      attributes: ['code']
+    };
 
-    const sequentialNumber = (todayTransactionCount + 1).toString().padStart(4, '0');
-    return `TRX${year}${month}${sequentialNumber}`;
+    if (dbTransaction) {
+      findOptions.transaction = dbTransaction;
+      if (useLock) {
+        findOptions.lock = Transaction.LOCK.UPDATE;
+      }
+    }
+
+    const lastTransaction = await Transaksi.findOne(findOptions);
+
+    let nextNumber = 1;
+    if (lastTransaction?.code?.startsWith(prefix)) {
+      const parsed = parseInt(lastTransaction.code.slice(prefix.length), 10);
+      if (!Number.isNaN(parsed)) {
+        nextNumber = parsed + 1;
+      }
+    }
+
+    return `${prefix}${nextNumber.toString().padStart(4, '0')}`;
   } catch (error) {
     console.error('Error generating transaction code:', error);
-    const timestamp = Date.now().toString().slice(-3);
-    return `TRX${year}${month}${timestamp}`;
+    const fallback = `${Date.now()}${Math.floor(Math.random() * 100)}`.slice(-4);
+    return `${prefix}${fallback}`;
   }
+};
+
+// Reserve a unique transaction code inside the open DB transaction
+const reserveTransactionCode = async (dbTransaction) => {
+  for (let attempts = 0; attempts < 10; attempts++) {
+    const transactionCode = await generateTransactionCode({
+      dbTransaction,
+      useLock: true
+    });
+
+    const existing = await Transaksi.findOne({
+      where: { code: transactionCode },
+      transaction: dbTransaction
+    });
+
+    if (!existing) {
+      return transactionCode;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 20 * (attempts + 1)));
+  }
+
+  return null;
 };
 
 const groupItemsByToken = (items) => {
@@ -288,25 +323,9 @@ router.post('/', verifyToken, async (req, res) => {
       }
     }
 
-    // Generate transaction code
-    let transactionCode;
-    let codeExists = true;
-    let attempts = 0;
+    let transactionCode = await reserveTransactionCode(dbTransaction);
 
-    while (codeExists && attempts < 10) {
-      transactionCode = await generateTransactionCode();
-      const existing = await Transaksi.findOne({
-        where: { code: transactionCode }
-      });
-      codeExists = !!existing;
-      attempts++;
-
-      if (codeExists) {
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-    }
-
-    if (codeExists) {
+    if (!transactionCode) {
       await dbTransaction.rollback();
       return res.status(500).json({
         success: false,
@@ -314,23 +333,49 @@ router.post('/', verifyToken, async (req, res) => {
       });
     }
 
-    // Create main transaction
-    const newTransaction = await Transaksi.create({
-      code: transactionCode,
-      memberid: memberid ? parseInt(memberid) : null,
-      customer: customer_name || null,
-      telepon: customer_phone || null,
-      cabangid: cabang_id ? parseInt(cabang_id) : null,
-      qty: 1,
-      grandtotal: total_price ? total_price.toString() : '0',
-      status: 1,
-      created_by: req.user?.userId || null,
-      updated_by: req.user?.userId || null
-    }, { transaction: dbTransaction });
+    const productList = Array.isArray(products) ? products : [];
+
+    // Create main transaction (retry if duplicate code from concurrent requests)
+    let newTransaction;
+    for (let createAttempt = 0; createAttempt < 5; createAttempt++) {
+      const codeToUse = createAttempt === 0
+        ? transactionCode
+        : await reserveTransactionCode(dbTransaction);
+
+      if (!codeToUse) {
+        await dbTransaction.rollback();
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to generate unique transaction code'
+        });
+      }
+
+      try {
+        newTransaction = await Transaksi.create({
+          code: codeToUse,
+          memberid: memberid ? parseInt(memberid) : null,
+          customer: customer_name || null,
+          telepon: customer_phone || null,
+          cabangid: cabang_id ? parseInt(cabang_id) : null,
+          qty: 1,
+          grandtotal: total_price ? total_price.toString() : '0',
+          status: 1,
+          created_by: req.user?.userId || null,
+          updated_by: req.user?.userId || null
+        }, { transaction: dbTransaction });
+        transactionCode = newTransaction.code;
+        break;
+      } catch (createError) {
+        if (createError.name === 'SequelizeUniqueConstraintError' && createAttempt < 4) {
+          continue;
+        }
+        throw createError;
+      }
+    }
 
     // Create product details
-    for (let i = 0; i < products.length; i++) {
-      const product = products[i];
+    for (let i = 0; i < productList.length; i++) {
+      const product = productList[i];
 
       const check = await Produk.findOne({
         where: { token: product.product_token }
@@ -1716,25 +1761,9 @@ router.post('/', verifyToken, async (req, res) => {
       }
     }
 
-    // Generate transaction code
-    let transactionCode;
-    let codeExists = true;
-    let attempts = 0;
+    let transactionCode = await reserveTransactionCode(dbTransaction);
 
-    while (codeExists && attempts < 10) {
-      transactionCode = await generateTransactionCode();
-      const existing = await Transaksi.findOne({
-        where: { code: transactionCode }
-      });
-      codeExists = !!existing;
-      attempts++;
-
-      if (codeExists) {
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-    }
-
-    if (codeExists) {
+    if (!transactionCode) {
       await dbTransaction.rollback();
       return res.status(500).json({
         success: false,
@@ -1742,23 +1771,49 @@ router.post('/', verifyToken, async (req, res) => {
       });
     }
 
-    // Create main transaction
-    const newTransaction = await Transaksi.create({
-      code: transactionCode,
-      memberid: memberid ? parseInt(memberid) : null,
-      customer: customer_name || null,
-      telepon: customer_phone || null,
-      cabangid: cabang_id ? parseInt(cabang_id) : null,
-      qty: 1,
-      grandtotal: total_price ? total_price.toString() : '0',
-      status: 1,
-      created_by: req.user?.userId || null,
-      updated_by: req.user?.userId || null
-    }, { transaction: dbTransaction });
+    const productList = Array.isArray(products) ? products : [];
+
+    // Create main transaction (retry if duplicate code from concurrent requests)
+    let newTransaction;
+    for (let createAttempt = 0; createAttempt < 5; createAttempt++) {
+      const codeToUse = createAttempt === 0
+        ? transactionCode
+        : await reserveTransactionCode(dbTransaction);
+
+      if (!codeToUse) {
+        await dbTransaction.rollback();
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to generate unique transaction code'
+        });
+      }
+
+      try {
+        newTransaction = await Transaksi.create({
+          code: codeToUse,
+          memberid: memberid ? parseInt(memberid) : null,
+          customer: customer_name || null,
+          telepon: customer_phone || null,
+          cabangid: cabang_id ? parseInt(cabang_id) : null,
+          qty: 1,
+          grandtotal: total_price ? total_price.toString() : '0',
+          status: 1,
+          created_by: req.user?.userId || null,
+          updated_by: req.user?.userId || null
+        }, { transaction: dbTransaction });
+        transactionCode = newTransaction.code;
+        break;
+      } catch (createError) {
+        if (createError.name === 'SequelizeUniqueConstraintError' && createAttempt < 4) {
+          continue;
+        }
+        throw createError;
+      }
+    }
 
     // Create product details
-    for (let i = 0; i < products.length; i++) {
-      const product = products[i];
+    for (let i = 0; i < productList.length; i++) {
+      const product = productList[i];
 
       const check = await Produk.findOne({
         where: { token: product.product_token }
